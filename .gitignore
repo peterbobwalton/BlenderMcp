@@ -1,0 +1,11 @@
+bin/
+obj/
+.vs/
+*.user
+__pycache__/
+_test/
+*.zip
+publish/
+tests/out/
+artifacts/
+*.exe

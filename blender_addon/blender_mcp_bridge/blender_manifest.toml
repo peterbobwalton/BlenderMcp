@@ -1,0 +1,15 @@
+schema_version = "1.0.0"
+
+id = "blender_mcp_bridge"
+version = "1.6.0"
+name = "Blender MCP Bridge (C#)"
+tagline = "Local socket bridge for the BlenderMcp C# MCP server"
+maintainer = "Pete"
+type = "add-on"
+blender_version_min = "4.2.0"
+license = ["SPDX:MIT"]
+tags = ["Development", "Pipeline"]
+
+[permissions]
+network = "Listens on a localhost TCP port for the MCP server"
+files = "Imports/exports assets and writes temporary screenshots"
