@@ -4,6 +4,7 @@ call for a whole prop set, no UV work) or per-face vertex colours."""
 import json
 import math
 import os
+import tempfile
 
 import bmesh
 import bpy
@@ -40,9 +41,32 @@ def _palette_image(name):
     return img
 
 
+def _remap_v(img, old_h, new_h):
+    """Rows are laid out from the top, so a taller image moves every swatch in V: keep painted faces on
+    their colour by remapping the UVs of faces whose material uses this palette."""
+    k = old_h / new_h
+    for me in bpy.data.meshes:
+        uv = me.uv_layers.active
+        if uv is None:
+            continue
+        slots = {i for i, m in enumerate(me.materials)
+                 if m and m.node_tree and any(n.type == "TEX_IMAGE" and n.image == img for n in m.node_tree.nodes)}
+        if not slots:
+            continue
+        for poly in me.polygons:
+            if poly.material_index in slots:
+                for li in poly.loop_indices:
+                    d = uv.data[li].uv
+                    d.y = 1.0 - (1.0 - d.y) * k
+
+
 def _paint_image(img, colors, swatch):
     rows = max(1, math.ceil(len(colors) / _COLS))
-    w, h = _pow2(_COLS * swatch), _pow2(rows * swatch)
+    w = _pow2(_COLS * swatch)
+    h = max(w, _pow2(rows * swatch))  # square until it overflows, so adding a colour rarely changes the height
+    old_h = img.size[1] if "mcp_palette" in img else 0
+    if old_h and old_h != h:
+        _remap_v(img, old_h, h)
     # Repaint from scratch as a generated image: after a save the image is file-backed, and a moved or
     # deleted PNG would otherwise leave it without a pixel buffer ("failed to load image buffer").
     img.source = "GENERATED"
@@ -81,7 +105,7 @@ def create_palette(p):
     colors = [_hex(_parse_color(c)) for c in _p(p, "colors", required=True)]
     swatch = int(_p(p, "swatch", 8))
     folder = _p(p, "folder") or (os.path.join(os.path.dirname(bpy.data.filepath), "textures")
-                                 if bpy.data.filepath else os.path.join(bpy.app.tempdir, "palettes"))
+                                 if bpy.data.filepath else os.path.join(tempfile.gettempdir(), "BlenderMcp_palettes"))
     os.makedirs(folder, exist_ok=True)
     img = bpy.data.images.get(f"T_{name}") or bpy.data.images.new(f"T_{name}", 8, 8, alpha=False)
     if img.size[0] == 0 and img.source != "GENERATED":

@@ -62,7 +62,7 @@ public static class EditMeshTools
         => Results.Text(await blender.CallAsync("bevel_edges", new Args
         {
             ["object"] = @object, ["width"] = width, ["segments"] = segments, ["angle_deg"] = angleDeg, ["selector"] = selector,
-        }, ct: ct));
+        }, TimeSpan.FromMinutes(5), ct));
 
     [McpServerTool(Name = "loop_cut", Title = "Loop cut")]
     [Description("Add edge loops by slicing the mesh with planes across a local axis: 'cuts' evenly spaced, or explicit 'positions' as 0..1 fractions of the object's extent.")]

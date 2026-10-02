@@ -40,7 +40,7 @@ public static class ModifierTools
     [McpServerTool(Name = "apply_modifiers", Title = "Apply modifiers")]
     [Description("Bake a single named modifier, or the whole stack when name is omitted, into the mesh. Returns triangle counts before/after.")]
     public static async Task<string> ApplyModifiers(BlenderConnection blender, string @object, string? name = null, CancellationToken ct = default)
-        => Results.Text(await blender.CallAsync("apply_modifiers", new Args { ["object"] = @object, ["name"] = name }, ct: ct));
+        => Results.Text(await blender.CallAsync("apply_modifiers", new Args { ["object"] = @object, ["name"] = name }, TimeSpan.FromMinutes(5), ct));
 }
 
 [McpServerToolType]
@@ -133,7 +133,7 @@ public static class MeshTools
         {
             ["object"] = @object, ["merge_distance"] = mergeDistance, ["delete_loose"] = deleteLoose,
             ["dissolve_degenerate"] = dissolveDegenerate, ["recalc_normals"] = recalcNormals, ["triangulate"] = triangulate,
-        }, ct: ct));
+        }, TimeSpan.FromMinutes(5), ct));
 
     [McpServerTool(Name = "set_shading", Title = "Set shading")]
     [Description("flat | smooth | auto. 'auto' smooths everything and marks edges sharper than angleDeg as sharp (the modern replacement for auto-smooth; exports cleanly to game engines).")]
@@ -180,5 +180,5 @@ public static class MeshTools
         => Results.Text(await blender.CallAsync("uv_unwrap", new Args
         {
             ["object"] = @object, ["method"] = method, ["uv_layer"] = uvLayer, ["margin"] = margin, ["angle_deg"] = angleDeg,
-        }, ct: ct));
+        }, TimeSpan.FromMinutes(5), ct));
 }

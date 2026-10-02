@@ -19,7 +19,7 @@ public static class CombineTools
         => Results.Text(await blender.CallAsync("join_objects", new Args
         {
             ["objects"] = objects, ["target"] = target, ["new_name"] = newName,
-        }, ct: ct));
+        }, TimeSpan.FromMinutes(5), ct));
 
     [McpServerTool(Name = "separate", Title = "Separate mesh")]
     [Description("Split a mesh into separate objects by loose parts or by material.")]
@@ -42,7 +42,7 @@ public static class CombineTools
         {
             ["object"] = @object, ["cutters"] = cutters, ["operation"] = operation, ["solver"] = solver,
             ["apply"] = apply, ["cutter_action"] = cutterAction,
-        }, ct: ct));
+        }, TimeSpan.FromMinutes(5), ct));
 }
 
 /// <summary>Texture baking.</summary>

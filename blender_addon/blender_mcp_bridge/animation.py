@@ -7,6 +7,7 @@ import contextlib
 import math
 import os
 import re
+import tempfile
 
 import bpy
 from mathutils import Euler, Matrix, Vector
@@ -36,7 +37,8 @@ def _bags(action, slot=None):
     if getattr(action, "layers", None) is not None and anim_utils and hasattr(anim_utils, "action_get_channelbag_for_slot"):
         slots = [slot] if slot is not None else list(action.slots)
         bags = [b for b in (anim_utils.action_get_channelbag_for_slot(action, s) for s in slots) if b is not None]
-        if bags or not hasattr(action, "fcurves"):
+        # with an explicit slot never fall back: on 4.4/4.5 action.fcurves is the FIRST slot's curves, not this one's
+        if bags or slot is not None or not hasattr(action, "fcurves"):
             return bags
     return [action] if hasattr(action, "fcurves") else []
 
@@ -53,10 +55,14 @@ def _obj_action(ob):
     return ad.action, getattr(ad, "action_slot", None)
 
 
-def _assign_action(ob, act):
+def _assign_action(ob, act, slot_identifier=None):
     ad = ob.animation_data or ob.animation_data_create()
     if ad.action != act:
         ad.action = act
+    if slot_identifier and hasattr(ad, "action_slot"):
+        slot = next((s for s in act.slots if s.identifier == slot_identifier), None)
+        if slot is not None:
+            ad.action_slot = slot
     if hasattr(ad, "action_slot") and ad.action_slot is None:
         suitable = list(getattr(ad, "action_suitable_slots", []) or [])
         if suitable:
@@ -783,8 +789,13 @@ def parent_with_weights(p):
     if mode == "rigid":
         bone = _p(p, "bone", required=True)
         _target(arm, bone)
+        if bone not in bone_names:
+            raise BridgeError(f"'{bone}' is not a deform bone, so the armature modifier would ignore its weights")
         for m in meshes:
             mw = m.matrix_world.copy()
+            # rigid means one bone only: drop weights left by an earlier auto/envelope skin (the suggested fallback)
+            for g in [g for g in m.vertex_groups if g.name in bone_names and g.name != bone]:
+                m.vertex_groups.remove(g)
             vg = m.vertex_groups.get(bone) or m.vertex_groups.new(name=bone)
             vg.add(range(len(m.data.vertices)), 1.0, "REPLACE")
             if not any(md.type == "ARMATURE" and md.object == arm for md in m.modifiers):
@@ -941,7 +952,7 @@ def render_animation_frames(p):
                                     before_view=lambda i: sc.frame_set(frames[i]))
     finally:
         sc.frame_set(saved[0], subframe=saved[1])
-    sheet = imaging.contact_sheet([rgba for _, rgba in shots], min(int(_p(p, "columns", 4)), len(frames)))
+    sheet = imaging.contact_sheet([rgba for _, rgba in shots], max(1, min(int(_p(p, "columns", 4)), len(frames))))
     sheet.update({"frames": frames, "fps": round(sc.render.fps / sc.render.fps_base, 3)})
     return sheet
 
@@ -1187,7 +1198,8 @@ def export_animation_for_unreal(p):
     """SK_<asset>.fbx (skinned mesh + skeleton, bind pose) and one A_<asset>_<clip>.fbx per action."""
     arm = _armature(_p(p, "armature", required=True))
     _ensure_object_mode()
-    folder = _p(p, "folder") or os.path.join(bpy.app.tempdir or os.environ.get("TEMP", "."), "BlenderMcp_Unreal")
+    # not bpy.app.tempdir: Blender deletes that on exit, before the files are imported into Unreal
+    folder = _p(p, "folder") or os.path.join(tempfile.gettempdir(), "BlenderMcp_Unreal")
     base = _p(p, "asset_name") or re.sub(r"^(SK_|Armature_?)", "", arm.name) or "Character"
     base = _safe(re.sub(r"^SK_", "", base))
     deform_only = bool(_p(p, "deform_only", True))
@@ -1211,6 +1223,9 @@ def export_animation_for_unreal(p):
     saved = {"action": ad.action, "slot": getattr(ad, "action_slot", None), "use_nla": ad.use_nla,
              "range": (sc.frame_start, sc.frame_end), "frame": (sc.frame_current, sc.frame_subframe),
              "scene_name": sc.name}
+    # clips are evaluated on the source rig too (root motion): put its pose back afterwards
+    saved_pose = [(pb, pb.location.copy(), pb.rotation_quaternion.copy(), pb.rotation_euler.copy(),
+                   tuple(pb.rotation_axis_angle), pb.scale.copy()) for pb in arm.pose.bones]
     files, clips = [], []
     temp_objs, temp_data, temp_acts, renamed = [], [], [], []
     try:
@@ -1240,7 +1255,8 @@ def export_animation_for_unreal(p):
             temp_acts.append(cact)
             if units_cm:
                 _scale_bone_translation(cact, 100.0)
-            _assign_action(rig, cact)
+            # the copy's slots keep the source's identifiers; pick the same one rather than the first suitable
+            _assign_action(rig, cact, getattr(getattr(ad, "action_slot", None), "identifier", None))
             a, b = act.frame_range
             sc.frame_start, sc.frame_end = int(math.floor(a)), int(math.ceil(b))
             sc.frame_set(sc.frame_start)
@@ -1276,6 +1292,9 @@ def export_animation_for_unreal(p):
             except Exception:
                 pass
         ad.use_nla = saved["use_nla"]
+        for pb, loc, quat, eul, aa, scl in saved_pose:
+            pb.location, pb.rotation_quaternion, pb.rotation_euler = loc, quat, eul
+            pb.rotation_axis_angle, pb.scale = aa, scl
         sc.frame_start, sc.frame_end = saved["range"]
         sc.frame_set(saved["frame"][0], subframe=saved["frame"][1])
 
@@ -1427,8 +1446,9 @@ def import_animation(p):
         name = _clip_name(a.name) if _p(p, "rename", True) else a.name
         a.name = (_p(p, "prefix") or "") + name  # one rename, so 'Walk' existing doesn't turn this into 'Walk.001'
         a.use_fake_user = True
-        if start is not None and _fcurves(a):
-            first = min(fc.keyframe_points[0].co.x for _, fc in _fcurves(a) if fc.keyframe_points)
+        firsts = [fc.keyframe_points[0].co.x for _, fc in _fcurves(a) if fc.keyframe_points]
+        if start is not None and firsts:
+            first = min(firsts)
             delta = float(start) - math.floor(first + 1e-6)
             if delta:
                 for _, fc in _fcurves(a):
@@ -1458,6 +1478,10 @@ def import_animation(p):
         # frame by frame instead - this also absorbs unit differences (cm vs m).
         baked = []
         for a in new_acts:
+            if not _action_bones(a):  # shape-key / object actions in the file: nothing to put on the rig
+                if not _p(p, "keep_imported", False):
+                    bpy.data.actions.remove(a)  # their objects are removed below
+                continue
             name = a.name
             a.name = name + "__src"
             baked.append(_transfer_pose(imp_arm, a, target, name))

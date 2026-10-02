@@ -63,18 +63,20 @@ def boolean(p):
     after = _p(p, "cutter_action", "hide").lower()
     if after not in ("hide", "delete", "keep"):
         raise BridgeError("cutter_action must be hide, delete or keep")
+    for c in cutters:  # validate everything before adding any modifier, so a bad cutter leaves nothing behind
+        if c == ob or c.type != "MESH":
+            raise BridgeError(f"'{c.name}' cannot be a cutter (must be another mesh)")
     before = _eval_mesh_stats(ob)["tris"]
     mods = []
     for c in cutters:
-        if c == ob or c.type != "MESH":
-            raise BridgeError(f"'{c.name}' cannot be a cutter (must be another mesh)")
         m = ob.modifiers.new(f"Bool_{c.name}", "BOOLEAN")
         m.operation = op
         m.object = c
         try:
             m.solver = solver
         except TypeError:
-            ob.modifiers.remove(m)
+            for bad in mods + [m]:
+                ob.modifiers.remove(bad)
             raise BridgeError("solver must be exact, float or manifold")
         mods.append(m)
     if apply:

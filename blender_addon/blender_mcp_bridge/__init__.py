@@ -114,7 +114,8 @@ def register():
         bpy.utils.register_class(c)
     bpy.types.WindowManager.mcp_note = bpy.props.StringProperty(
         name="Note for Claude", description="What should Claude look at or change?", default="")
-    bpy.app.timers.register(_auto_start, first_interval=1.0)
+    # persistent: Blender drops other timers when a .blend loads (e.g. launched by double-clicking a file)
+    bpy.app.timers.register(_auto_start, first_interval=1.0, persistent=True)
 
 
 def unregister():

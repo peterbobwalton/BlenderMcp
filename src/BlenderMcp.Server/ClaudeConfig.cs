@@ -61,8 +61,19 @@ internal static class ClaudeConfig
         var exe = ArgValue(args, "--exe") ?? Environment.ProcessPath
             ?? throw new InvalidOperationException("Cannot determine executable path");
 
+        List<string> paths;
+        try
+        {
+            paths = FindConfigFiles();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"FAILED: cannot locate Claude config: {ex.Message}");
+            return 1;
+        }
+
         var failures = 0;
-        foreach (var path in FindConfigFiles())
+        foreach (var path in paths)
         {
             try
             {
@@ -83,13 +94,31 @@ internal static class ClaudeConfig
         var root = Load(path);
         var servers = Servers(root);
 
-        var entry = new JsonObject { ["command"] = exe };
+        // Update only what we own (command, --port) so the user's own additions (env, extra args) survive upgrades.
+        var current = servers[name] as JsonObject;
+        var entry = current?.DeepClone() as JsonObject ?? new JsonObject();
+        entry["command"] = exe;
         if (port is not null)
         {
-            entry["args"] = new JsonArray("--port", port);
+            var args = entry["args"] as JsonArray ?? new JsonArray();
+            var i = args.Select(a => a?.ToString()).ToList().IndexOf("--port");
+            if (i < 0)
+            {
+                args.Add("--port");
+                args.Add(port);
+            }
+            else if (i + 1 < args.Count)
+            {
+                args[i + 1] = port;
+            }
+            else
+            {
+                args.Add(port);
+            }
+            entry["args"] = args;
         }
 
-        if (servers[name] is JsonNode current && JsonNode.DeepEquals(current, entry))
+        if (current is not null && JsonNode.DeepEquals(current, entry))
         {
             return false;
         }

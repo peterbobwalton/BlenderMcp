@@ -2,6 +2,7 @@
 
 import os
 import re
+import tempfile
 
 import bpy
 from mathutils import Euler, Matrix, Vector
@@ -85,7 +86,7 @@ def check_naming(p):
             want("MESH", ob, "mesh")
             if fix and ob.name != base_old:
                 # keep collision / LOD companions matched to the renamed mesh
-                for o in bpy.data.objects:
+                for o in list(bpy.data.objects):  # renaming re-sorts bpy.data.objects
                     for pre in _collision_prefixes(base_old):
                         if o.name.startswith(pre):
                             o.name = o.name.replace(f"_{base_old}_", f"_{ob.name}_", 1)
@@ -115,7 +116,8 @@ def export_for_unreal(p):
         raise BridgeError(f"'{ob.name}' is not a mesh")
     if _LOD_RE.match(ob.name):
         ob = _obj(_base_name(ob.name))  # passed a LOD: export its asset
-    folder = _p(p, "folder") or os.path.join(bpy.app.tempdir or os.environ.get("TEMP", "."), "BlenderMcp_Unreal")
+    # not bpy.app.tempdir: Blender deletes that on exit, before the file is imported into Unreal
+    folder = _p(p, "folder") or os.path.join(tempfile.gettempdir(), "BlenderMcp_Unreal")
     asset = _p(p, "asset_name") or (ob.name if ob.name.startswith("SM_") else f"SM_{ob.name}")
     safe = "".join("_" if ch in '<>:"/\\|?*' else ch for ch in asset)
     path = os.path.join(folder, safe + ".fbx")

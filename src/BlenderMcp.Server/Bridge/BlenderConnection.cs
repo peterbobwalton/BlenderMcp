@@ -109,7 +109,8 @@ public sealed class BlenderConnection(BlenderOptions options, ILogger<BlenderCon
                 {
                     throw new NotSentException(new IOException("connection closed"));
                 }
-                await link.Stream.WriteAsync(payload, ct).ConfigureAwait(false);
+                // Not cancellable: a write abandoned half-way would leave a partial line on a live socket.
+                await link.Stream.WriteAsync(payload, CancellationToken.None).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is IOException or ObjectDisposedException or SocketException)
             {
@@ -219,6 +220,7 @@ public sealed class BlenderConnection(BlenderOptions options, ILogger<BlenderCon
         var tcs = new TaskCompletionSource<JsonObject>(TaskCreationOptions.RunContinuationsAsynchronously);
         link.Pending[id] = tcs;
         string? blender = null;
+        var timedOut = false;
         try
         {
             var ping = JsonSerializer.SerializeToUtf8Bytes(new { id, cmd = "ping", @params = new { } }, Json);
@@ -226,12 +228,30 @@ public sealed class BlenderConnection(BlenderOptions options, ILogger<BlenderCon
             var reply = await tcs.Task.WaitAsync(options.ConnectTimeout, ct).ConfigureAwait(false);
             blender = reply["result"]?["blender"]?.ToString();
         }
-        catch (Exception ex) when (ex is TimeoutException or IOException or SocketException)
+        catch (TimeoutException)
         {
+            timedOut = true;
+        }
+        catch (Exception ex) when (ex is IOException or SocketException)
+        {
+        }
+        catch
+        {
+            link.Kill(new IOException("connect cancelled"));  // don't leak the socket and its read loop
+            throw;
         }
         finally
         {
             link.Pending.TryRemove(id, out _);
+        }
+
+        if (timedOut)
+        {
+            link.Kill(new IOException("no reply to ping"));
+            throw new BlenderException(
+                $"Something is listening on {options.Host}:{options.Port} but did not answer within {options.ConnectTimeout.TotalSeconds:0}s. " +
+                "Blender may be busy (loading a file, rendering, a modal dialog) - try again shortly. If it keeps happening, " +
+                "another app may be using that port; pick a free port in Blender (View3D > Sidebar > MCP) and pass the same --port to the server.");
         }
 
         if (string.IsNullOrEmpty(blender))
@@ -316,6 +336,28 @@ public sealed class BlenderConnection(BlenderOptions options, ILogger<BlenderCon
         catch (JsonException ex)
         {
             log.LogWarning(ex, "Bad JSON from Blender");
+            // Fail the request now rather than letting it wait for its timeout, if the id can still be read.
+            if (TryReadLeadingId(json, out var key) && link.Pending.TryGetValue(key, out var tcs))
+            {
+                tcs.TrySetResult(new JsonObject { ["ok"] = false, ["error"] = $"Blender sent a reply that is not valid JSON: {ex.Message}" });
+            }
+        }
+    }
+
+    /// <summary>Reads the "id" when it is the first property, which still works if the JSON is broken later on.</summary>
+    private static bool TryReadLeadingId(ReadOnlySpan<byte> json, out long id)
+    {
+        id = 0;
+        try
+        {
+            var reader = new Utf8JsonReader(json);
+            return reader.Read() && reader.TokenType == JsonTokenType.StartObject
+                && reader.Read() && reader.TokenType == JsonTokenType.PropertyName && reader.ValueTextEquals("id"u8)
+                && reader.Read() && reader.TokenType == JsonTokenType.Number && reader.TryGetInt64(out id);
+        }
+        catch (JsonException)
+        {
+            return false;
         }
     }
 

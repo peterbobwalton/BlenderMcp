@@ -313,12 +313,6 @@ begin
       'Restart Claude Desktop to load the "{#McpName}" MCP server.';
 end;
 
-function InitializeUninstall: Boolean;
-begin
-  KillServer;
-  Result := True;
-end;
-
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   I, Code: Integer;
@@ -326,6 +320,7 @@ var
 begin
   if CurUninstallStep <> usUninstall then
     Exit;
+  KillServer;  { only once the user has confirmed; files in use can't be removed }
   State := ExpandConstant('{app}\' + StateFile);
   for I := 0 to 63 do
   begin

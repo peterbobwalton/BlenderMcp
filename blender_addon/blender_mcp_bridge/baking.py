@@ -1,6 +1,7 @@
 """Texture baking (Cycles): high-poly -> low-poly normal/AO/colour/roughness maps, saved and wired up."""
 
 import os
+import tempfile
 
 import bpy
 
@@ -34,7 +35,7 @@ def bake_maps(p):
             raise BridgeError(f"'{h.name}' cannot be a high-poly source")
     size = max(64, min(8192, int(_p(p, "size", 1024))))
     folder = _p(p, "folder") or (os.path.join(os.path.dirname(bpy.data.filepath), "textures")
-                                 if bpy.data.filepath else os.path.join(bpy.app.tempdir, "bakes"))
+                                 if bpy.data.filepath else os.path.join(tempfile.gettempdir(), "BlenderMcp_bakes"))
     os.makedirs(folder, exist_ok=True)
     connect = bool(_p(p, "connect", True))
     base = low.name[3:] if low.name.startswith("SM_") else low.name
@@ -44,6 +45,8 @@ def bake_maps(p):
         mat = bpy.data.materials.new(f"M_{base}")
         low.data.materials.append(mat)
     mats = list({s.material for s in low.material_slots if s.material})
+    for m in mats:
+        _principled(m)  # new / non-node materials have no node tree yet (Blender 4.x)
 
     sc = bpy.context.scene
     vl = bpy.context.view_layer
@@ -59,6 +62,7 @@ def bake_maps(p):
         isolated = [o for o in sc.objects if o not in keep and not o.hide_render and o.type not in ("CAMERA",)]
     ray_vis = {}
     results = []
+    created = []  # nodes added for the map being baked, removed again if it fails
     try:
         for o in unhidden:
             o.hide_set(False)
@@ -86,7 +90,11 @@ def bake_maps(p):
             nodes = []
             for m in mats:
                 nt = m.node_tree
-                n = nt.nodes.new("ShaderNodeTexImage")
+                # re-bakes reuse the node from last time instead of piling up new ones
+                n = next((x for x in nt.nodes if x.type == "TEX_IMAGE" and x.label == img_name), None)
+                if n is None:
+                    n = nt.nodes.new("ShaderNodeTexImage")
+                    created.append((nt, n))
                 n.image = img
                 n.label = img_name
                 for other in nt.nodes:
@@ -122,13 +130,23 @@ def bake_maps(p):
                 n.location = (bsdf.location.x - 600, bsdf.location.y - 300 * (list(_MAPS).index(name)))
                 if connect and socket:
                     if name == "normal":
-                        nm = m.node_tree.nodes.new("ShaderNodeNormalMap")
+                        nm = next((l.from_node for l in bsdf.inputs["Normal"].links if l.from_node.type == "NORMAL_MAP"), None)
+                        if nm is None:
+                            nm = m.node_tree.nodes.new("ShaderNodeNormalMap")
                         nm.location = (bsdf.location.x - 250, n.location.y)
                         m.node_tree.links.new(n.outputs["Color"], nm.inputs["Color"])
                         m.node_tree.links.new(nm.outputs["Normal"], bsdf.inputs["Normal"])
                     else:
                         m.node_tree.links.new(n.outputs["Color"], bsdf.inputs[socket])
             results.append({"map": name, "image": img_name, "path": path, "connected": bool(connect and socket)})
+            created.clear()  # this map is done; keep its nodes
+    except Exception:
+        for nt, n in created:
+            try:
+                nt.nodes.remove(n)
+            except Exception:
+                pass
+        raise
     finally:
         for attr, v in ray_vis.items():
             setattr(low, attr, v)

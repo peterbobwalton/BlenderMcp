@@ -12,6 +12,7 @@ so large payloads (images) never block Blender's UI while being sent.
 """
 
 import json
+import math
 import queue
 import socket
 import threading
@@ -38,6 +39,19 @@ _state = {
 }
 
 
+def _finite(obj):
+    """Copy of obj with NaN/Infinity floats replaced by None."""
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _finite(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_finite(v) for v in obj]
+    if obj is None or isinstance(obj, (str, int)):
+        return obj
+    return _finite(_json_default(obj))  # vectors, matrices etc. become lists/str first
+
+
 class _Client:
     def __init__(self, sock, addr, server):
         self.sock = sock
@@ -51,16 +65,20 @@ class _Client:
         threading.Thread(target=self._writer, daemon=True, name="mcp-write").start()
 
     def _reader(self):
-        buf = b""
+        buf = bytearray()
+        scanned = 0  # bytes of buf already known to hold no newline
         try:
             while self.alive and self.server.running:
                 chunk = self.sock.recv(1 << 16)
                 if not chunk:
                     break
                 buf += chunk
-                if len(buf) > _MAX_LINE_BYTES and b"\n" not in buf:
-                    self.send({"id": None, "ok": False, "error": "Request too large"})
-                    break
+                if buf.find(b"\n", scanned) < 0:
+                    scanned = len(buf)  # search only new bytes next time, not the whole buffer
+                    if len(buf) > _MAX_LINE_BYTES:
+                        self.send({"id": None, "ok": False, "error": "Request too large"})
+                        break
+                    continue
                 while b"\n" in buf:
                     line, buf = buf.split(b"\n", 1)
                     line = line.strip()
@@ -79,6 +97,7 @@ class _Client:
                         self.send({"id": req.get("id"), "ok": False, "error": "'params' must be an object"})
                         continue
                     self.server.inbox.put((self, req))
+                scanned = len(buf)  # the remainder has no newline
         except OSError:
             pass
         finally:
@@ -99,7 +118,11 @@ class _Client:
         self.close()
 
     def send(self, obj):
-        data = (json.dumps(obj, separators=(",", ":"), default=_json_default) + "\n").encode("utf-8")
+        try:
+            text = json.dumps(obj, separators=(",", ":"), default=_json_default, allow_nan=False)
+        except ValueError:  # NaN/Infinity aren't valid JSON and the C# side would drop the reply
+            text = json.dumps(_finite(obj), separators=(",", ":"), default=_json_default, allow_nan=False)
+        data = (text + "\n").encode("utf-8")
         self.out.put(data)
 
     def close(self):

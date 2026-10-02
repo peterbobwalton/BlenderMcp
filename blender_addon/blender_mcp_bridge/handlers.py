@@ -841,6 +841,8 @@ def assign_material(p):
     faces = _p(p, "face_indices")
     if faces is not None and slot is None:
         raise BridgeError("face_indices requires 'slot' (the material slot to assign those faces to)")
+    if faces is not None:
+        _ensure_object_mode()  # polygon edits made in edit mode are overwritten on exit
     done = []
     for ob in _objs(names):
         _assign_material(ob, mat, slot)
@@ -968,6 +970,7 @@ def set_shading(p):
     names = _p(p, "objects", required=True)
     mode = _p(p, "mode", "auto").lower()
     angle = math.radians(float(_p(p, "angle_deg", 30.0)))
+    _ensure_object_mode()  # mesh edits made in edit mode are overwritten on exit
     out = []
     for ob in _objs(names):
         if ob.type != "MESH":
@@ -992,6 +995,7 @@ def apply_transform(p):
     do_loc = bool(_p(p, "location", False))
     do_rot = bool(_p(p, "rotation", True))
     do_scl = bool(_p(p, "scale", True))
+    _ensure_object_mode()  # mesh edits made in edit mode are overwritten on exit
     out = []
     for ob in _objs(names):
         if ob.type != "MESH":
@@ -1006,7 +1010,7 @@ def apply_transform(p):
         new_basis = keep_loc @ keep_rot @ keep_scl
         # whatever part of the old basis we drop is baked into the mesh: basis == new_basis @ applied
         applied = new_basis.inverted_safe() @ basis
-        ob.data.transform(applied)
+        ob.data.transform(applied, shape_keys=True)
         if applied.determinant() < 0:
             ob.data.flip_normals()  # Mesh.transform inverts winding for mirroring matrices
         ob.matrix_basis = new_basis
@@ -1024,6 +1028,7 @@ def set_origin(p):
     """where: bounds_center | bottom_center | median | world_origin | cursor | [x,y,z] (world)."""
     ob = _mesh_obj(_p(p, "object", required=True))
     where = _p(p, "where", "bottom_center")
+    _ensure_object_mode()  # mesh edits made in edit mode are overwritten on exit
     me = ob.data
     if me.users > 1:
         ob.data = me = me.copy()
@@ -1047,7 +1052,7 @@ def set_origin(p):
         local = inv @ _scene().cursor.location
     else:
         raise BridgeError("where must be bounds_center, bottom_center, median, world_origin, cursor or [x,y,z]")
-    me.transform(Matrix.Translation(-local))
+    me.transform(Matrix.Translation(-local), shape_keys=True)
     ob.matrix_world = ob.matrix_world @ Matrix.Translation(local)
     for child in ob.children:
         child.matrix_parent_inverse = Matrix.Translation(-local) @ child.matrix_parent_inverse
@@ -1185,8 +1190,11 @@ def decimate(p):
     cur = _eval_mesh_stats(ob)["tris"]
     target = _p(p, "target_tris")
     ratio = float(_p(p, "ratio", 0.5))
+    apply = bool(_p(p, "apply", True))
     if target:
-        ratio = max(0.0001, min(1.0, float(target) / max(1, cur)))
+        # applying moves the modifier to the top of the stack, so it sees the base mesh, not the evaluated one
+        base = _tri_count(ob.data) if apply else cur
+        ratio = max(0.0001, min(1.0, float(target) / max(1, base)))
     mod = ob.modifiers.new("MCP_Decimate", "DECIMATE")
     mod.decimate_type = "COLLAPSE"
     mod.ratio = ratio
@@ -1194,7 +1202,7 @@ def decimate(p):
     if _p(p, "symmetry"):
         mod.use_symmetry = True
         mod.symmetry_axis = p["symmetry"].upper()
-    if _p(p, "apply", True):
+    if apply:
         _bake_evaluated_single(ob, mod)
     return {"object": ob.name, "ratio": round(ratio, 4), "tris_before": cur, "tris_after": _eval_mesh_stats(ob)["tris"]}
 
@@ -1354,7 +1362,7 @@ def _gather_export_objects(p):
     if _p(p, "include_collision", True):
         extra = []
         for ob in objs:
-            for o in bpy.data.objects:
+            for o in bpy.context.view_layer.objects:
                 if o.name.startswith(_collision_prefixes(ob.name)) and o not in objs and o not in extra:
                     extra.append(o)
         objs += extra
@@ -1369,18 +1377,22 @@ def _gather_export_objects(p):
 @contextlib.contextmanager
 def _selected_only(objs):
     vl = bpy.context.view_layer
+    # objects outside this view layer (other scene, excluded collection) can't be selected or exported
+    objs = [o for o in objs if o.name in vl.objects]
+    if not objs:
+        raise BridgeError("None of the objects to export are in the current view layer")
     prev_sel = [o for o in vl.objects if o.select_get()]
     prev_act = vl.objects.active
     hidden = []
-    for o in vl.objects:
-        o.select_set(False)
-    for o in objs:
-        if o.hide_get():
-            o.hide_set(False)
-            hidden.append(o)
-        o.select_set(True)
-    vl.objects.active = objs[0]
     try:
+        for o in vl.objects:
+            o.select_set(False)
+        for o in objs:
+            if o.hide_get():
+                o.hide_set(False)
+                hidden.append(o)
+            o.select_set(True)
+        vl.objects.active = objs[0]
         yield
     finally:
         for o in vl.objects:

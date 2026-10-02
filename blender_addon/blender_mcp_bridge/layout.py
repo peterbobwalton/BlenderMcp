@@ -13,6 +13,15 @@ from .handlers import (BridgeError, _collection, _obj, _objs, _p, _scene, _vec, 
 _AXES = {"x": 0, "y": 1, "z": 2}
 
 
+def _shift_world(o, i, d):
+    """Move an object by d along world axis i (works for parented objects) and refresh matrices so
+    children and later bounds reads see the move."""
+    delta = Vector((0.0, 0.0, 0.0))
+    delta[i] = d
+    o.matrix_world = Matrix.Translation(delta) @ o.matrix_world
+    bpy.context.view_layer.update()
+
+
 def _axis(p, default="x"):
     a = str(_p(p, "axis", default)).lower()
     if a not in _AXES:
@@ -159,7 +168,7 @@ def align_objects(p):
     for o in objs:
         d = target - key(o)
         if abs(d) > 1e-9:
-            o.location[i] += d
+            _shift_world(o, i, d)
             moved.append(o.name)
     return {"axis": "xyz"[i], "to": to, "value": round(target, 4), "moved": moved}
 
@@ -180,8 +189,7 @@ def distribute_objects(p):
         cursor = _world_bounds([objs[0]])[1][i]
         for o in objs[1:]:
             mn, mx = _world_bounds([o])
-            o.location[i] += cursor + float(gap) - mn[i]
-            bpy.context.view_layer.update()
+            _shift_world(o, i, cursor + float(gap) - mn[i])
             cursor = _world_bounds([o])[1][i]
     else:
         first = (lambda b: (b[0][i] + b[1][i]) / 2)(_world_bounds([objs[0]]))
@@ -189,7 +197,7 @@ def distribute_objects(p):
         step = (last - first) / (len(objs) - 1)
         for k, o in enumerate(objs[1:-1], start=1):
             mn, mx = _world_bounds([o])
-            o.location[i] += first + step * k - (mn[i] + mx[i]) / 2
+            _shift_world(o, i, first + step * k - (mn[i] + mx[i]) / 2)
     return {"axis": "xyz"[i], "order": [o.name for o in objs]}
 
 
@@ -223,7 +231,7 @@ def drop_to_floor(p):
                         best = z
             rest = best if best is not None else float(floor)
         d = rest - mn.z
-        o.location.z += d
+        _shift_world(o, 2, d)
         out.append({"name": o.name, "moved_z": round(d, 4), "rests_at": round(rest, 4)})
     return {"results": out}
 
@@ -231,6 +239,7 @@ def drop_to_floor(p):
 # ------------------------------------------------------------------ scene diff
 
 _SNAPSHOTS = {}
+_SNAPSHOT_SEQ = [0]
 
 
 def _fingerprint(o):
@@ -253,15 +262,16 @@ def scene_changes(p):
     """Take a snapshot (returns a token) or diff against an earlier token: objects added, removed, changed."""
     current = {o.name: _fingerprint(o) for o in _scene().objects}
     token = _p(p, "since")
-    new_token = f"s{len(_SNAPSHOTS) + 1}"
+    old = _SNAPSHOTS.get(token) if token is not None else None
+    if token is not None and old is None:
+        raise BridgeError(f"Unknown or expired token '{token}' (Blender restarted?) - take a new snapshot")
+    _SNAPSHOT_SEQ[0] += 1
+    new_token = f"s{_SNAPSHOT_SEQ[0]}"
     _SNAPSHOTS[new_token] = current
     while len(_SNAPSHOTS) > 20:
         _SNAPSHOTS.pop(next(iter(_SNAPSHOTS)))
     if token is None:
         return {"token": new_token, "objects": len(current)}
-    old = _SNAPSHOTS.get(token)
-    if old is None:
-        raise BridgeError(f"Unknown or expired token '{token}' (Blender restarted?) - take a new snapshot")
     return {
         "token": new_token,
         "added": sorted(set(current) - set(old)),
