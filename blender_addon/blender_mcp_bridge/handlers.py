@@ -149,9 +149,18 @@ def _ensure_object_mode():
 @contextlib.contextmanager
 def _edit_mode(ob):
     """Enter edit mode on a single object with a valid context, restore after."""
-    _ensure_object_mode()
     vl = bpy.context.view_layer
     prev_active = vl.objects.active
+    prev_mode = prev_active.mode if prev_active is not None else "OBJECT"
+    _ensure_object_mode()
+    # select_all below replaces the user's element selection: keep it to put back afterwards
+    me = ob.data
+    saved_sel = []
+    for attr in ("vertices", "edges", "polygons"):  # by name: edit mode reallocates the arrays
+        elems = getattr(me, attr)
+        flags = [False] * len(elems)
+        elems.foreach_get("select", flags)
+        saved_sel.append((attr, flags))
     prev_sel = [o for o in vl.objects if o.select_get()]
     for o in prev_sel:
         o.select_set(False)
@@ -173,6 +182,17 @@ def _edit_mode(ob):
             if o.name in vl.objects:
                 o.select_set(True)
         vl.objects.active = prev_active
+        if ob.data == me:  # same topology count unless the operator changed it (separate, etc.)
+            for attr, flags in saved_sel:
+                elems = getattr(me, attr)
+                if len(elems) == len(flags):
+                    elems.foreach_set("select", flags)
+        if prev_active is not None and prev_mode != "OBJECT":
+            try:
+                with bpy.context.temp_override(**_window_ctx(), active_object=prev_active, object=prev_active):
+                    bpy.ops.object.mode_set(mode=prev_mode)
+            except Exception:
+                pass  # e.g. the object was removed or can't enter that mode any more
 
 
 def _tri_count(mesh):

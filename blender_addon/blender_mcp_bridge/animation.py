@@ -1219,7 +1219,10 @@ def export_animation_for_unreal(p):
 
     sc = _scene()
     units_cm = str(_p(p, "units", "cm")).lower() != "m"
+    had_ad = arm.animation_data is not None
     ad = arm.animation_data or arm.animation_data_create()
+    # assigning a clip marks it fake-user; export only borrows the clips, so put the flags back afterwards
+    saved_fake = [(a, a.use_fake_user) for a in acts]
     saved = {"action": ad.action, "slot": getattr(ad, "action_slot", None), "use_nla": ad.use_nla,
              "range": (sc.frame_start, sc.frame_end), "frame": (sc.frame_current, sc.frame_subframe),
              "scene_name": sc.name}
@@ -1292,10 +1295,14 @@ def export_animation_for_unreal(p):
             except Exception:
                 pass
         ad.use_nla = saved["use_nla"]
+        for a_, fake in saved_fake:
+            a_.use_fake_user = fake
         for pb, loc, quat, eul, aa, scl in saved_pose:
             pb.location, pb.rotation_quaternion, pb.rotation_euler = loc, quat, eul
             pb.rotation_axis_angle, pb.scale = aa, scl
         sc.frame_start, sc.frame_end = saved["range"]
+        if not had_ad:
+            arm.animation_data_clear()
         sc.frame_set(saved["frame"][0], subframe=saved["frame"][1])
 
     ue_folder = _p(p, "unreal_folder") or f"/Game/Characters/{base}"

@@ -51,10 +51,6 @@ Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 [Tasks]
 Name: "claude"; Description: "Add the MCP server to Claude Desktop (claude_desktop_config.json)"
 
-[Run]
-Filename: "{app}\server\{#ServerExe}"; Parameters: "--register --name {#McpName} --port {code:GetPort}"; \
-  Flags: runhidden waituntilterminated; StatusMsg: "Registering with Claude Desktop..."; Tasks: claude
-
 [UninstallRun]
 Filename: "{app}\server\{#ServerExe}"; Parameters: "--unregister --name {#McpName}"; \
   Flags: runhidden waituntilterminated; RunOnceId: "UnregisterClaude"
@@ -73,6 +69,7 @@ var
   BlenderExes: TArrayOfString;
   BlenderVers: TArrayOfString;
   Results: String;
+  ClaudeResult: String;
 
 { ---------------------------------------------------------------- helpers }
 
@@ -275,6 +272,23 @@ begin
     Results := Results + '  Blender ' + Ver + ': FAILED (exit code ' + IntToStr(Code) + ')' + #13#10;
 end;
 
+{ Registration runs from code (not [Run]) so a failure is reported instead of silently ignored. }
+procedure RegisterWithClaude;
+var
+  Code: Integer;
+begin
+  ClaudeResult := '';
+  if not WizardIsTaskSelected('claude') then
+    Exit;
+  WizardForm.StatusLabel.Caption := 'Registering with Claude Desktop...';
+  if Exec(ExpandConstant('{app}\server\{#ServerExe}'), '--register --name {#McpName} --port ' + GetPort(''),
+          '', SW_HIDE, ewWaitUntilTerminated, Code) and (Code = 0) then
+    ClaudeResult := 'Restart Claude Desktop to load the "{#McpName}" MCP server.'
+  else
+    ClaudeResult := 'Claude Desktop: registration FAILED (code ' + IntToStr(Code) + '). Check that claude_desktop_config.json ' +
+      'is valid JSON and not locked, then run "' + ExpandConstant('{app}\server\{#ServerExe}') + '" --register --name {#McpName}';
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   I: Integer;
@@ -285,6 +299,7 @@ begin
     for I := 0 to GetArrayLength(BlenderExes) - 1 do
       if BlenderPage.Values[I] then
         InstallIntoBlender(BlenderExes[I], BlenderVers[I], I);
+    RegisterWithClaude;
   end;
 end;
 
@@ -307,10 +322,12 @@ end;
 
 procedure CurPageChanged(CurPageID: Integer);
 begin
-  if (CurPageID = wpFinished) and (Results <> '') then
-    WizardForm.FinishedLabel.Caption := WizardForm.FinishedLabel.Caption + #13#10#13#10 +
-      'Blender:' + #13#10 + Results + #13#10 +
-      'Restart Claude Desktop to load the "{#McpName}" MCP server.';
+  if CurPageID <> wpFinished then
+    Exit;
+  if Results <> '' then
+    WizardForm.FinishedLabel.Caption := WizardForm.FinishedLabel.Caption + #13#10#13#10 + 'Blender:' + #13#10 + Results;
+  if ClaudeResult <> '' then
+    WizardForm.FinishedLabel.Caption := WizardForm.FinishedLabel.Caption + #13#10#13#10 + ClaudeResult;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
