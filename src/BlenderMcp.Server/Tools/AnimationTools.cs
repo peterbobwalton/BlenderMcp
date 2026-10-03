@@ -282,7 +282,7 @@ public static class UnrealAnimationTools
         }, ct: ct));
 
     [McpServerTool(Name = "export_animation_for_unreal", Title = "Export character for Unreal")]
-    [Description("Export a rig for Unreal: SK_<asset>.fbx (skinned meshes + skeleton in bind pose) and one A_<asset>_<clip>.fbx per action, with Unreal-safe settings (no extra root bone, no leaf bones, deform bones only, baked keys over each clip's own range, written in centimetres so the root bone has scale 1). Runs validate_rig first (errors stop the export unless force=true). Returns the files, root-motion hints and a ready-to-run Unreal Python import script.")]
+    [Description("Export a rig for Unreal: SK_<asset>.fbx (skinned meshes + skeleton in bind pose) and one A_<asset>_<clip>.fbx per action, with Unreal-safe settings (no extra root bone, no leaf bones, deform bones only, baked keys over each clip's own range, written in centimetres so the root bone has scale 1). Rigs driven by constraints (IK etc.) or drivers are baked to plain keys first, so the clip looks as it does in Blender. Runs validate_rig first (errors stop the export unless force=true). Returns the files, root-motion hints and a ready-to-run Unreal Python import script.")]
     public static async Task<string> ExportAnimationForUnreal(
         BlenderConnection blender,
         [Description("Armature (or a mesh skinned to it).")] string armature,

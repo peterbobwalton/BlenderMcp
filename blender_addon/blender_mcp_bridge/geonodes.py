@@ -1,6 +1,7 @@
 """Geometry Nodes: list node groups (local + Blender's Essentials library), add them as modifiers,
 and set their inputs by display name."""
 
+import math
 import os
 
 import bpy
@@ -23,6 +24,23 @@ def _inputs(ng):
             if getattr(i, "item_type", "") == "SOCKET" and i.in_out == "INPUT" and i.socket_type != "NodeSocketGeometry"]
 
 
+def _is_angle(item):
+    """Angle floats, Euler vectors and Rotation inputs: Blender stores radians, the tools speak degrees."""
+    if item.socket_type == "NodeSocketRotation":
+        return True
+    sub = getattr(item, "subtype", "") or ""
+    idname = getattr(item, "bl_socket_idname", "") or item.bl_rna.identifier
+    return sub in ("ANGLE", "EULER") or idname.endswith(("FloatAngle", "VectorEuler"))
+
+
+def _conv(v, f):
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return round(f(v), 4)
+    if isinstance(v, list):
+        return [_conv(x, f) for x in v]
+    return v
+
+
 def _slot(mod, item):
     """Blender 5.x keeps modifier inputs in mod.properties.inputs.<identifier> (.value/.type/.attribute_name).
     Returns None on 4.x, where they are ID properties: mod[identifier]."""
@@ -41,7 +59,10 @@ def _get_value(mod, item):
         if item.identifier not in mod.keys():
             return None
         v = mod[item.identifier]
-    return getattr(v, "name", None) if isinstance(v, bpy.types.ID) else _jsonable(v)
+    if isinstance(v, bpy.types.ID):
+        return v.name
+    v = _jsonable(v)
+    return _conv(v, math.degrees) if _is_angle(item) else v
 
 
 def _describe(ng, mod=None):
@@ -52,6 +73,10 @@ def _describe(ng, mod=None):
             if hasattr(i, attr):
                 v = getattr(i, attr)
                 d[key] = v.name if isinstance(v, bpy.types.ID) else _jsonable(v)
+                if _is_angle(i):
+                    d[key] = _conv(d[key], math.degrees)
+        if _is_angle(i):
+            d["unit"] = "degrees"
         if mod is not None:
             d["value"] = _get_value(mod, i)
             slot = _slot(mod, i)
@@ -151,6 +176,8 @@ def _set_inputs(ob, mod, values):
                 val = int(val)
             elif st == "NodeSocketFloat" and not isinstance(val, list):
                 val = float(val)
+            if _is_angle(item):
+                val = _conv(val, math.radians)
             slot = _slot(mod, item)
             if slot is not None:
                 slot.type = "VALUE" if "VALUE" in {e.identifier for e in slot.bl_rna.properties["type"].enum_items} else slot.type

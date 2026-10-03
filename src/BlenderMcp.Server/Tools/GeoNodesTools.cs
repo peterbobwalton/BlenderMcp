@@ -22,7 +22,7 @@ public static class GeoNodesTools
         BlenderConnection blender,
         string @object,
         [Description("Node group name.")] string group,
-        [Description("Input values by input name. Angle and Rotation inputs are in radians (Blender's node units), unlike the degrees used by the other tools.")] Dictionary<string, JsonElement>? inputs = null,
+        [Description("Input values by input name. Angle and Rotation inputs are in degrees, like the other tools.")] Dictionary<string, JsonElement>? inputs = null,
         [Description("Modifier name (default: group name).")] string? name = null,
         CancellationToken ct = default)
         => Results.Text(await blender.CallAsync("add_geometry_nodes", new Args
@@ -31,7 +31,7 @@ public static class GeoNodesTools
         }, ct: ct));
 
     [McpServerTool(Name = "set_geometry_nodes_inputs", Title = "Set Geometry Nodes inputs")]
-    [Description("Change inputs of an existing Geometry Nodes modifier by input name (first GN modifier if 'modifier' is omitted). Angle and Rotation inputs are in radians (Blender's node units), unlike the degrees used by the other tools.")]
+    [Description("Change inputs of an existing Geometry Nodes modifier by input name (first GN modifier if 'modifier' is omitted). Angle and Rotation inputs are in degrees, like the other tools.")]
     public static async Task<string> SetGeometryNodesInputs(
         BlenderConnection blender, string @object, Dictionary<string, JsonElement> inputs, string? modifier = null,
         CancellationToken ct = default)

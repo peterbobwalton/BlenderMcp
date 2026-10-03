@@ -1104,6 +1104,44 @@ def _scale_bone_translation(act, f):
             fc.update()
 
 
+def _needs_bake(arm):
+    """True when bones are moved by more than their own keys: active constraints (IK, Copy Rotation...) or
+    drivers. The scaled export copy can't reproduce those, so such clips are baked to plain keys first."""
+    if any(not c.mute and c.influence > 0 for pb in arm.pose.bones for c in pb.constraints):
+        return True
+    ad = arm.animation_data
+    return bool(ad and any(fc.data_path.startswith("pose.bones") for fc in ad.drivers))
+
+
+def _bake_clip(arm, rig, name, f0, f1, scale):
+    """Sample the evaluated pose of the ORIGINAL rig (metres, constraints and drivers live) every frame and key
+    the result on the export copy as plain local transforms (locations x scale). Returns the new action."""
+    sc = _scene()
+    samples = []
+    for f in range(f0, f1 + 1):
+        sc.frame_set(f)
+        samples.append((f, [(pb.name, arm.convert_space(pose_bone=pb, matrix=pb.matrix, from_space="POSE",
+                                                        to_space="LOCAL")) for pb in arm.pose.bones]))
+    act = bpy.data.actions.new(name + "__mcp_baked")
+    ad = rig.animation_data or rig.animation_data_create()
+    ad.action = act
+    pbs = rig.pose.bones
+    for pb in pbs:
+        pb.rotation_mode = "QUATERNION"
+    prev = {}
+    for f, rows in samples:
+        for n, m in rows:
+            pb = pbs[n]
+            loc, rot, scl = m.decompose()
+            if n in prev:
+                rot.make_compatible(prev[n])  # no sign flips between frames
+            prev[n] = rot
+            pb.location, pb.rotation_quaternion, pb.scale = loc * scale, rot, scl
+            for prop in ("location", "rotation_quaternion", "scale"):
+                pb.keyframe_insert(prop, frame=f, group=n)
+    return act
+
+
 def _export_copies(arm, meshes, objs, datas, renamed, scale):
     """Temporary single-user copies of the rig ('Armature') and its meshes (original names), scaled about the
     origin with the scale applied. Originals are renamed out of the way and restored by the caller."""
@@ -1243,6 +1281,12 @@ def export_animation_for_unreal(p):
         # the copies hold centimetre values in a metre scene: 0.01 x the exporter's 100 (m -> cm) = 1, so the
         # file is written 1:1 in centimetres (UnitScaleFactor 1, no scale on any node)
         gscale = 0.01 if units_cm else 1.0
+        bake = _needs_bake(arm)
+        if bake:
+            # the baked keys already contain what the constraints did: the copy must not apply them again
+            for pb in rig.pose.bones:
+                for c in list(pb.constraints):
+                    pb.constraints.remove(c)
         if include_mesh:
             rig.data.pose_position = "REST"
             sc.frame_set(sc.frame_current)
@@ -1254,14 +1298,18 @@ def export_animation_for_unreal(p):
         fps = sc.render.fps / sc.render.fps_base
         for act in acts:
             _assign_action(arm, act)  # the original, for root-motion measurement
-            cact = act.copy()
-            temp_acts.append(cact)
-            if units_cm:
-                _scale_bone_translation(cact, 100.0)
-            # the copy's slots keep the source's identifiers; pick the same one rather than the first suitable
-            _assign_action(rig, cact, getattr(getattr(ad, "action_slot", None), "identifier", None))
             a, b = act.frame_range
             sc.frame_start, sc.frame_end = int(math.floor(a)), int(math.ceil(b))
+            if bake:
+                cact = _bake_clip(arm, rig, act.name, sc.frame_start, sc.frame_end, 100.0 if units_cm else 1.0)
+                temp_acts.append(cact)
+            else:
+                cact = act.copy()
+                temp_acts.append(cact)
+                if units_cm:
+                    _scale_bone_translation(cact, 100.0)
+                # the copy's slots keep the source's identifiers; pick the same one rather than the first suitable
+                _assign_action(rig, cact, getattr(getattr(ad, "action_slot", None), "identifier", None))
             sc.frame_set(sc.frame_start)
             clip = _safe(re.sub(r"^A_", "", _clip_name(act.name)))
             sc.name = clip  # the FBX take is named after the scene: makes it 'Walk', not 'Scene'
@@ -1270,6 +1318,8 @@ def export_animation_for_unreal(p):
             n = sc.frame_end - sc.frame_start
             row = {"kind": "animation", "action": act.name, "path": path, "bytes": size,
                    "frames": [sc.frame_start, sc.frame_end], "seconds": round(n / fps, 3)}
+            if bake:
+                row["baked"] = "constraints/drivers baked to keys"
             rm = _root_motion(arm, act)
             if rm:
                 row["root_travel_m"] = rm["root_travel_m"]
