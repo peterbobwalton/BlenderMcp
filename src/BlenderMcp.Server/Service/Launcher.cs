@@ -150,29 +150,38 @@ internal static class Launcher
         }
     }
 
-    /// <summary>blender.exe: BLENDER_MCP_BLENDER, else the one a running Blender uses, else the .blend file association,
-    /// else the newest under Program Files\Blender Foundation.</summary>
-    public static string? FindBlender()
+    /// <summary>blender.exe: the session's BLENDER_MCP_BLENDER (sent in bridge.hello), else the service's own, else the
+    /// one a running Blender uses, else the .blend file association, else the newest under Program Files\Blender Foundation.</summary>
+    public static string? FindBlender(string? preferred = null)
     {
-        var env = Environment.GetEnvironmentVariable("BLENDER_MCP_BLENDER");
-        if (!string.IsNullOrWhiteSpace(env) && File.Exists(env))
+        foreach (var exe in new[] { preferred, Environment.GetEnvironmentVariable("BLENDER_MCP_BLENDER") })
         {
-            return Fix(env);
-        }
-        foreach (var p in Process.GetProcessesByName("blender"))
-        {
-            try
+            if (!string.IsNullOrWhiteSpace(exe) && File.Exists(exe))
             {
-                if (p.MainModule?.FileName is { } path && File.Exists(path))
+                return Fix(exe);
+            }
+        }
+        var running = Process.GetProcessesByName("blender");
+        try
+        {
+            foreach (var p in running)
+            {
+                try
                 {
-                    return Fix(path);
+                    if (p.MainModule?.FileName is { } path && File.Exists(path))
+                    {
+                        return Fix(path);
+                    }
+                }
+                catch (Exception)
+                {
+                    // access denied etc.
                 }
             }
-            catch (Exception)
-            {
-                // access denied etc.
-            }
-            finally
+        }
+        finally
+        {
+            foreach (var p in running)
             {
                 p.Dispose();
             }

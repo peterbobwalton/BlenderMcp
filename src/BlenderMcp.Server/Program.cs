@@ -34,6 +34,7 @@ var options = new BlenderOptions
         ? bp : BridgeDefaults.ServicePort,
     Folders = folders,
     Owner = string.IsNullOrWhiteSpace(owner) ? $"Claude session in {folders[^1]} (pid {Environment.ProcessId})" : owner,
+    BlenderExe = Environment.GetEnvironmentVariable("BLENDER_MCP_BLENDER") is { Length: > 0 } exe ? exe : null,
 };
 
 if (args.Contains("--service"))

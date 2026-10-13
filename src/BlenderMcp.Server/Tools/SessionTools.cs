@@ -12,7 +12,7 @@ public static class SessionTools
         "action=status: this session's Blender and why, every open Blender (file, port, who uses it) and every session. " +
         "action=select target=<port or part of the file name>: use that open Blender. " +
         "action=open path=<.blend or folder>: use the Blender that has it open, else start Blender on it (no path: an empty scene). " +
-        "action=auto: back to matching by folder. action=release: give this session's Blender back so another session can use it.")]
+        "action=auto: back to matching by folder. action=release: give this session's Blender back so another session can use it; this session then has none until auto, select or open.")]
     public static async Task<string> BlenderSession(
         BlenderConnection blender,
         [Description("status | select | open | auto | release")] string action = "status",

@@ -27,6 +27,9 @@ public sealed class BlenderOptions
     /// <summary>Who this session is, as other sessions see it in "Already in use".</summary>
     public string Owner { get; set; } = "";
 
+    /// <summary>blender.exe the bridge starts for this session (BLENDER_MCP_BLENDER); null: the bridge finds one.</summary>
+    public string? BlenderExe { get; set; }
+
     /// <summary>Stays the same across reconnects to the bridge service.</summary>
     public string SessionId { get; } = Guid.NewGuid().ToString("N");
 
@@ -295,6 +298,7 @@ public sealed class BlenderConnection(BlenderOptions options, ILogger<BlenderCon
                     session = options.SessionId,
                     folders = options.Folders,
                     owner = options.Owner,
+                    blender = options.BlenderExe,
                     version = BridgeDefaults.Version,
                 },
             }, Json);

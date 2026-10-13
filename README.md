@@ -117,7 +117,7 @@ announcement files for a Blender too busy to answer), then:
 
 The `blender_session` tool shows and changes this: `status` (this session's Blender and why, every Blender with its
 file and who uses it, every session), `select target=<port or file name>`, `open path=<.blend or folder>` (uses the
-Blender that has it open, else starts one), `auto` (back to matching by folder), `release` (give the Blender back).
+Blender that has it open, else starts one), `auto` (back to matching by folder), `release` (give the Blender back; the session then has none until `auto`, `select` or `open`).
 `BlenderMcp.Server.exe --list` prints the same status from the current folder. `--port` (or `BLENDER_MCP_PORT`) still
 talks to one Blender directly, without the bridge (the e2e test does).
 

@@ -7,7 +7,7 @@ Needs blender.exe (BLENDER env var, else the newest under Program Files\\Blender
   2. runs the server in folder A and in folder B (bridge mode, its own service port 9871 so a real service on 9870
      is not touched) and checks each is routed to its own Blender;
   3. checks a second session in folder A is refused with "Already in use", and gets A once the first session ends;
-  4. checks blender_session status / select / release;
+  4. checks blender_session status / select / release / auto;
   5. with --launch: a session in folder C (C.blend, no Blender on it) makes the bridge start Blender on C.blend.
      This uses your normal Blender profile, so the installed add-on must be 1.7+ with "Start automatically" on.
 Exit code 0 = all checks passed. Other Blenders you have open are left alone (they may show up in status).
@@ -162,7 +162,10 @@ def main():
         err, msg = a2.call("blender_session", action="select", target="B.blend")
         check("select by file name once B is released", not err and msg.get("port") == port_b, msg)
         err, st = b.call("bridge_status")
-        check("B's session then finds its Blender in use", err and "Already in use" in str(st), st)
+        check("B's session has no Blender after release", err and "released its Blender" in str(st), st)
+        b.call("blender_session", action="auto")
+        err, st = b.call("bridge_status")
+        check("after auto, B's session finds its Blender in use", err and "Already in use" in str(st), st)
     finally:
         for s in sessions:
             s.close()
