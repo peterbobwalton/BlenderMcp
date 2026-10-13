@@ -92,9 +92,16 @@ def scatter_instances(p):
     yaw = float(_p(p, "random_yaw_deg", 0))
     smin, smax = (_p(p, "scale_range") or [1, 1])[:2]
     align = bool(_p(p, "align_to_normal", False))
-
+    # before generating anything: surface placement with min_distance is slow, and huge counts would freeze Blender
     if mode == "grid":
         cnt = _p(p, "grid", [3, 3])
+        wanted = int(cnt[0]) * int(cnt[1])
+    else:
+        wanted = int(_p(p, "count", 10))
+    if wanted > 5000:
+        raise BridgeError("Refusing to create more than 5000 objects in one call")
+
+    if mode == "grid":
         nx, ny = int(cnt[0]), int(cnt[1])
         sp = _p(p, "spacing", 2.0)
         sp = [float(sp), float(sp)] if isinstance(sp, (int, float)) else [float(sp[0]), float(sp[1])]
@@ -118,9 +125,9 @@ def scatter_instances(p):
                       for _ in range(int(_p(p, "count", 10)))]
     else:
         raise BridgeError("mode must be grid, surface or box")
-    if len(placements) > 5000:
-        raise BridgeError("Refusing to create more than 5000 objects in one call")
 
+    # keep the source's own rotation and scale (e.g. an FBX prop rotated 90 degrees or scaled 0.01)
+    src_rs = src.matrix_world.to_3x3().to_4x4()
     names = []
     for pos, normal in placements:
         ob = src.copy()
@@ -133,7 +140,7 @@ def scatter_instances(p):
         if align and normal.length > 0:
             basis = normal.to_track_quat("Z", "Y").to_matrix() @ basis
         s = rng.uniform(float(smin), float(smax))
-        ob.matrix_world = Matrix.Translation(pos) @ basis.to_4x4() @ Matrix.Diagonal((s, s, s, 1))
+        ob.matrix_world = Matrix.Translation(pos) @ basis.to_4x4() @ Matrix.Diagonal((s, s, s, 1)) @ src_rs
         names.append(ob.name)
     return {"source": src.name, "mode": mode, "count": len(names), "collection": col.name, "linked": linked,
             "objects": names[:50], "note": "linked copies share one mesh - edit the source mesh to change them all" if linked else ""}

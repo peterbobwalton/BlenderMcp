@@ -92,6 +92,17 @@ class _Edit:
     def local_vec(self, world_vec):
         return self.ob.matrix_world.to_3x3().inverted_safe() @ Vector(world_vec)
 
+    def local_offset(self, local_normal, metres):
+        """Local-space move of `metres` in the world along a local face normal (sizes are metres even when the
+        object is scaled, e.g. a 0.01-scale FBX import)."""
+        world_n = (self.ob.matrix_world.to_3x3().inverted_safe().transposed() @ Vector(local_normal)).normalized()
+        return self.local_vec(world_n * metres)
+
+    def local_len(self, metres):
+        """A length in metres as local units (by the object's mean scale), for inset and bevel sizes."""
+        mean = sum(abs(v) for v in self.ob.matrix_world.to_scale()) / 3
+        return metres / mean if mean > 1e-12 else metres
+
 
 @command("face_info")
 def face_info(p):
@@ -121,7 +132,7 @@ def extrude_faces(p):
         if individual:
             res = bmesh.ops.extrude_discrete_faces(e.bm, faces=faces)
             for f in res["faces"]:
-                bmesh.ops.translate(e.bm, vec=f.normal * dist, verts=f.verts)
+                bmesh.ops.translate(e.bm, vec=e.local_offset(f.normal, dist), verts=f.verts)
             n = len(res["faces"])
         else:
             avg = sum((f.normal for f in faces), Vector()).normalized()
@@ -130,7 +141,7 @@ def extrude_faces(p):
             stale = [f for f in faces if f.is_valid]  # originals left behind as inner caps (if any)
             if stale:
                 bmesh.ops.delete(e.bm, geom=stale, context="FACES")
-            bmesh.ops.translate(e.bm, vec=avg * dist, verts=verts)
+            bmesh.ops.translate(e.bm, vec=e.local_offset(avg, dist), verts=verts)
             n = len(faces)
         bmesh.ops.recalc_face_normals(e.bm, faces=e.bm.faces)
     return e.result(extruded_faces=n, distance=dist)
@@ -143,6 +154,7 @@ def inset_faces(p):
     depth = float(_p(p, "depth", 0.0))
     with _Edit(_p(p, "object", required=True)) as e:
         faces = select_faces(e.ob, e.bm, _p(p, "selector"))
+        thickness, depth = e.local_len(thickness), e.local_len(depth)
         if _p(p, "individual", False):
             bmesh.ops.inset_individual(e.bm, faces=faces, thickness=thickness, depth=depth, use_even_offset=True)
         else:
@@ -164,7 +176,7 @@ def bevel_edges(p):
             edges = [ed for ed in e.bm.edges if len(ed.link_faces) == 2 and ed.calc_face_angle(0) > lim]
         if not edges:
             raise BridgeError("No edges matched (try a lower angle_deg)")
-        bmesh.ops.bevel(e.bm, geom=edges, offset=width, offset_type="OFFSET", segments=segments,
+        bmesh.ops.bevel(e.bm, geom=edges, offset=e.local_len(width), offset_type="OFFSET", segments=segments,
                         profile=float(_p(p, "profile", 0.5)), affect="EDGES", clamp_overlap=True)
     return e.result(beveled_edges=len(edges))
 
