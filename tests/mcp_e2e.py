@@ -95,7 +95,7 @@ def main():
     m.notify("notifications/initialized")
     check("initialize", init["result"]["serverInfo"]["name"] == "blender-csharp")
     tools = m.request("tools/list")["result"]["tools"]
-    check("91 tools listed", len(tools) == 91, len(tools))
+    check("92 tools listed", len(tools) == 92, len(tools))
     check("render_views schema", any(t["name"] == "render_views" for t in tools))
 
     _, st = m.call("bridge_status")
@@ -645,7 +645,7 @@ def regressions(m, C):
     m.call("execute_python", code=(
         "import sys\n"
         "S=[v for k,v in sys.modules.items() if k.endswith('blender_mcp_bridge.server')][0]\n"
-        f"def _bounce():\n    S.stop(); S.start('127.0.0.1', {PORT})\n"
+        f"def _bounce():\n    S.stop(); S.start('127.0.0.1', {PORT}, announce_self=False)\n"
         "bpy.app.timers.register(_bounce, first_interval=0.3)"))
     time.sleep(1.5)
     s, st = m.call("bridge_status")

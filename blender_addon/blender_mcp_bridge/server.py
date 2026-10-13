@@ -11,8 +11,10 @@ not thread-safe. Responses are handed back to a per-client writer thread
 so large payloads (images) never block Blender's UI while being sent.
 """
 
+import atexit
 import json
 import math
+import os
 import queue
 import socket
 import threading
@@ -22,6 +24,10 @@ import traceback
 import bpy
 
 from . import handlers
+
+# Ports tried when the configured one is taken (another Blender has it): 9877, then 9880-9899.
+# 9878 is UnrealMcp's, 9879 the e2e test Blender's. Keep in sync with BridgeDefaults.BlenderPorts (C#).
+PORTS = [9877] + list(range(9880, 9900))
 
 _MAX_LINE_BYTES = 64 << 20  # refuse absurd requests instead of buffering forever
 
@@ -154,6 +160,7 @@ class BridgeServer:
         self.clients = set()
         self._lock = threading.Lock()
         self._sock = None
+        self.announce = False
 
     def start(self):
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -250,22 +257,107 @@ def _execute(client, req):
         client.send({"id": rid, "ok": False, "error": f"{type(ex).__name__}: {ex}", "trace": traceback.format_exc(limit=6)})
 
 
-def start(host="127.0.0.1", port=9877):
+def _instances_dir():
+    base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), ".local", "share")
+    return os.path.join(base, "BlenderMcp", "instances")
+
+
+def _announce_path(port):
+    return os.path.join(_instances_dir(), f"{port}.json")
+
+
+def announce():
+    """Write instances/<port>.json (port, pid, open file) so the bridge service finds this Blender and its file
+    even while it is too busy to answer a ping. Rewritten when a file is loaded or saved."""
+    srv = _state["server"]
+    if srv is None or not srv.running or not srv.announce:
+        return
+    data = {
+        "port": srv.port,
+        "pid": os.getpid(),
+        "file": bpy.data.filepath,
+        "blender": bpy.app.version_string,
+    }
+    try:
+        os.makedirs(_instances_dir(), exist_ok=True)
+        tmp = _announce_path(srv.port) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        os.replace(tmp, _announce_path(srv.port))
+    except OSError as ex:
+        print(f"[BlenderMCP] could not write {_announce_path(srv.port)}: {ex}")
+
+
+def _unannounce(srv):
+    if srv is None or not srv.announce:
+        return
+    try:
+        path = _announce_path(srv.port)
+        with open(path, encoding="utf-8") as f:
+            mine = json.load(f).get("pid") == os.getpid()
+        if mine:
+            os.remove(path)
+    except (OSError, ValueError):
+        pass
+
+
+@bpy.app.handlers.persistent
+def _on_file_changed(*_args):
+    announce()
+
+
+def _at_exit():
+    _unannounce(_state["server"])
+
+
+atexit.register(_at_exit)
+
+
+def start(host="127.0.0.1", port=9877, fallback=False, announce_self=True):
+    """Listen on port. fallback=True: if another Blender has it, take the next free one of PORTS instead.
+    announce_self=False keeps this Blender out of the bridge service's view (the e2e test Blender)."""
     stop()
-    srv = BridgeServer(host, port)
-    srv.start()
-    _state["server"] = srv
-    print(f"[BlenderMCP] bridge listening on {host}:{port}")
+    candidates = [port] + ([p for p in PORTS if p != port] if fallback else [])
+    error = None
+    for p in candidates:
+        srv = BridgeServer(host, p)
+        try:
+            srv.start()
+        except OSError as ex:
+            error = error or ex
+            try:
+                srv._sock.close()
+            except Exception:
+                pass
+            continue
+        srv.announce = announce_self
+        _state["server"] = srv
+        announce()
+        for handlers_list in (bpy.app.handlers.load_post, bpy.app.handlers.save_post):
+            if _on_file_changed not in handlers_list:
+                handlers_list.append(_on_file_changed)
+        print(f"[BlenderMCP] bridge listening on {host}:{p}" + ("" if p == port else f" (port {port} is taken)"))
+        return p
+    raise error
 
 
 def stop():
     srv = _state["server"]
     if srv is not None:
         srv.stop()
+        _unannounce(srv)
         _state["server"] = None
         print("[BlenderMCP] bridge stopped")
+    for handlers_list in (bpy.app.handlers.load_post, bpy.app.handlers.save_post):
+        if _on_file_changed in handlers_list:
+            handlers_list.remove(_on_file_changed)
     if bpy.app.timers.is_registered(_pump):
         bpy.app.timers.unregister(_pump)
+
+
+def current_port():
+    srv = _state["server"]
+    return srv.port if srv is not None and srv.running else None
 
 
 def is_running():

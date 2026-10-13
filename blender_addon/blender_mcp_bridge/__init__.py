@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Blender MCP Bridge (C#)",
     "author": "Pete",
-    "version": (1, 6, 0),
+    "version": (1, 7, 0),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > MCP",
     "description": "Local TCP bridge used by the BlenderMcp C# MCP server",
@@ -23,7 +23,9 @@ class MCPBRIDGE_Prefs(bpy.types.AddonPreferences):
     bl_idname = __package__
 
     host: bpy.props.StringProperty(name="Host", default="127.0.0.1")
-    port: bpy.props.IntProperty(name="Port", default=9877, min=1024, max=65535)
+    port: bpy.props.IntProperty(
+        name="Port", default=9877, min=1024, max=65535,
+        description="Port to listen on. When another Blender already has it, the next free one of 9880-9899 is used")
     auto_start: bpy.props.BoolProperty(name="Start automatically", default=True)
 
     def draw(self, context):
@@ -40,10 +42,12 @@ class MCPBRIDGE_OT_start(bpy.types.Operator):
     def execute(self, context):
         p = _prefs()
         try:
-            server.start(p.host, p.port)
+            port = server.start(p.host, p.port, fallback=True)
         except OSError as ex:
-            self.report({"ERROR"}, f"Could not listen on {p.host}:{p.port}: {ex}")
+            self.report({"ERROR"}, f"Could not listen on {p.host}:{p.port} or any of 9880-9899: {ex}")
             return {"CANCELLED"}
+        if port != p.port:
+            self.report({"INFO"}, f"Port {p.port} is taken (another Blender?), listening on {port}")
         return {"FINISHED"}
 
 
@@ -78,7 +82,7 @@ class MCPBRIDGE_PT_panel(bpy.types.Panel):
         p = _prefs()
         running = server.is_running()
         row = lay.row()
-        row.label(text=f"{'Running' if running else 'Stopped'}  {p.host}:{p.port}",
+        row.label(text=f"{'Running' if running else 'Stopped'}  {p.host}:{server.current_port() or p.port}",
                   icon="CHECKMARK" if running else "X")
         lay.operator("mcpbridge.stop" if running else "mcpbridge.start",
                      icon="PAUSE" if running else "PLAY")
@@ -103,7 +107,7 @@ def _auto_start():
     try:
         p = _prefs()
         if p.auto_start and not server.is_running():
-            server.start(p.host, p.port)
+            server.start(p.host, p.port, fallback=True)
     except Exception as ex:  # port in use, etc.
         print(f"[BlenderMCP] auto-start failed: {ex}")
     return None
