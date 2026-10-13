@@ -40,11 +40,16 @@ def dispatch(cmd, params):
     if entry is None:
         raise BridgeError(f"Unknown command '{cmd}'. Available: {', '.join(sorted(_COMMANDS))}")
     fn, undo = entry
+    ok = False
     try:
-        return fn(params)
+        result = fn(params)
+        ok = True
+        return result
     finally:
         if undo:
-            _undo_push(f"MCP: {cmd}")
+            # A failed call still gets its own step: it may have changed part of the scene before failing, and
+            # without a step those changes would merge into the user's next undo. Labelled so it reads as such.
+            _undo_push(f"MCP: {cmd}" if ok else f"MCP: {cmd} (failed)")
 
 
 # ---------------------------------------------------------------- helpers
@@ -1734,7 +1739,8 @@ def batch(p):
         try:
             results.append({"ok": True, "result": fn(s.get("params") or {})})
         except Exception as ex:
-            results.append({"ok": False, "error": f"{type(ex).__name__}: {ex}"})
+            # same format as a top-level call: plain message for our own errors, type name for unexpected ones
+            results.append({"ok": False, "error": str(ex) if isinstance(ex, BridgeError) else f"{type(ex).__name__}: {ex}"})
             if stop:
                 break
     _undo_push(_p(p, "undo_label", "MCP: batch"))

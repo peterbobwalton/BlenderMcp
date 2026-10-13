@@ -30,7 +30,7 @@ Run `BlenderMcpSetup-<version>.exe` (build it with `installer\build-installer.ps
   `%APPDATA%\Blender Foundation\Blender\<ver>\extensions\user_default\blender_mcp_bridge`
 - Claude Desktop → `blender-csharp` added to `claude_desktop_config.json` (classic and Microsoft Store builds)
 
-Close Blender first, restart Claude Desktop afterwards. Silent: `BlenderMcpSetup-1.7.0.exe /VERYSILENT /TASKS=claude`
+Close Blender first, restart Claude Desktop afterwards. Silent: `BlenderMcpSetup-1.7.1.exe /VERYSILENT /TASKS=claude`
 (`/PORT=9877` ties the entry to that one Blender instead of using the bridge).
 Uninstall (Settings ▸ Apps) removes the add-on and the Claude config entry.
 

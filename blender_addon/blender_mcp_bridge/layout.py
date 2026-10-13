@@ -249,6 +249,11 @@ _SNAPSHOTS = {}
 _SNAPSHOT_SEQ = [0]
 
 
+def forget_snapshots():
+    """Another .blend was loaded: old tokens must report 'expired', not a diff against a different file."""
+    _SNAPSHOTS.clear()
+
+
 def _fingerprint(o):
     h = hashlib.md5()
     h.update(repr([round(v, 5) for row in o.matrix_world for v in row]).encode())
@@ -271,7 +276,7 @@ def scene_changes(p):
     token = _p(p, "since")
     old = _SNAPSHOTS.get(token) if token is not None else None
     if token is not None and old is None:
-        raise BridgeError(f"Unknown or expired token '{token}' (Blender restarted?) - take a new snapshot")
+        raise BridgeError(f"Unknown or expired token '{token}' (Blender restarted, or another file was opened?) - take a new snapshot")
     _SNAPSHOT_SEQ[0] += 1
     new_token = f"s{_SNAPSHOT_SEQ[0]}"
     _SNAPSHOTS[new_token] = current

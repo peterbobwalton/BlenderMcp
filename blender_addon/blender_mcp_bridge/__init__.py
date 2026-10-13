@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Blender MCP Bridge (C#)",
     "author": "Pete",
-    "version": (1, 7, 0),
+    "version": (1, 7, 1),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > MCP",
     "description": "Local TCP bridge used by the BlenderMcp C# MCP server",

@@ -92,7 +92,14 @@ internal static class Discovery
             {
                 try
                 {
-                    var o = JsonNode.Parse(File.ReadAllText(path)) as JsonObject;
+                    // share delete/write so a Blender rewriting or removing its file this moment isn't refused
+                    string text;
+                    using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                    using (var reader = new StreamReader(fs))
+                    {
+                        text = reader.ReadToEnd();
+                    }
+                    var o = JsonNode.Parse(text) as JsonObject;
                     var port = (int?)o?["port"] ?? 0;
                     var pid = (int?)o?["pid"] ?? 0;
                     if (port <= 0 || !IsBlender(pid))

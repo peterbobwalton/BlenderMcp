@@ -719,6 +719,11 @@ def create_armature(p):
     for b in spec:
         if b.get("parent") and b["parent"] not in names:
             raise BridgeError(f"Bone '{b['name']}': parent '{b['parent']}' is not in the list")
+        # checked before anything is created, so a bad bone leaves no half-built rig behind
+        head = Vector(_vec(b.get("head") or [0, 0, 0], name=f"{b['name']}.head"))
+        tail = Vector(_vec(b.get("tail") or [0, 0.1, 0], name=f"{b['name']}.tail"))
+        if (tail - head).length < 1e-5:
+            raise BridgeError(f"Bone '{b['name']}' has zero length")
     data = bpy.data.armatures.new(name)
     ob = bpy.data.objects.new(name, data)
     _collection(_p(p, "collection"), create=True).objects.link(ob)
@@ -731,8 +736,6 @@ def create_armature(p):
             eb = ebs.new(b["name"])
             eb.head = _vec(b.get("head") or [0, 0, 0], name=f"{b['name']}.head")
             eb.tail = _vec(b.get("tail") or [0, 0.1, 0], name=f"{b['name']}.tail")
-            if (eb.tail - eb.head).length < 1e-5:
-                raise BridgeError(f"Bone '{b['name']}' has zero length")
             eb.roll = math.radians(float(b.get("roll") or 0))
             eb.use_deform = b.get("deform") is not False
             made[b["name"]] = eb
