@@ -16,7 +16,7 @@ public static class SessionTools
     public static async Task<string> BlenderSession(
         BlenderConnection blender,
         [Description("status | select | open | auto | release")] string action = "status",
-        [Description("select: a port (9877, 9880...) or part of the open file's name.")] string? target = null,
+        [Description("select: a port (9877, 9850...) or part of the open file's name.")] string? target = null,
         [Description("open: a .blend file, or a folder holding one. Omit for an empty scene.")] string? path = null,
         CancellationToken ct = default)
     {

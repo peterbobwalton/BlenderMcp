@@ -730,11 +730,11 @@ def apply_modifiers(p):
     """Apply one named modifier, or all of them (stack order) when name is omitted."""
     ob = _mesh_obj(_p(p, "object", required=True))
     name = _p(p, "name")
+    if name and ob.modifiers.get(name) is None:
+        raise BridgeError(f"No modifier '{name}' on {ob.name}")
+    _ensure_object_mode()  # both paths: Edit Mode would overwrite the result and hide unsaved edits from the bake
     before = _tri_count(ob.data)
     if name:
-        if ob.modifiers.get(name) is None:
-            raise BridgeError(f"No modifier '{name}' on {ob.name}")
-        _ensure_object_mode()
         if ob.data.users > 1:
             ob.data = ob.data.copy()
         with bpy.context.temp_override(**_window_ctx(), object=ob, active_object=ob,
@@ -751,8 +751,15 @@ def _bake_evaluated(ob):
     new_me = bpy.data.meshes.new_from_object(ob.evaluated_get(dg), preserve_all_data_layers=True, depsgraph=dg)
     old = ob.data
     name = old.name
-    ob.modifiers.clear()
-    ob.data = new_me
+    try:
+        ob.data = new_me
+    except Exception:
+        bpy.data.meshes.remove(new_me)
+        raise
+    if ob.data != new_me:  # assignment refused (e.g. still in Edit Mode): keep the modifiers, drop the copy
+        bpy.data.meshes.remove(new_me)
+        raise BridgeError(f"Could not replace the mesh of {ob.name}; its modifiers were left as they were.")
+    ob.modifiers.clear()  # only once the baked mesh is in place
     if old.users == 0:
         bpy.data.meshes.remove(old)
     new_me.name = name  # after removing the old mesh, so it doesn't become "name.001"

@@ -25,9 +25,9 @@ import bpy
 
 from . import handlers
 
-# Ports tried when the configured one is taken (another Blender has it): 9877, then 9880-9899.
-# 9878 is UnrealMcp's, 9879 the e2e test Blender's. Keep in sync with BridgeDefaults.BlenderPorts (C#).
-PORTS = [9877] + list(range(9880, 9900))
+# Ports tried when the configured one is taken (another Blender has it): 9877, then 9850-9869.
+# 9878-9899 belong to the UnrealMcp bridges, 9849 to the e2e test Blender. Keep in sync with BridgeDefaults.BlenderPorts (C#).
+PORTS = [9877] + list(range(9850, 9870))
 
 _MAX_LINE_BYTES = 64 << 20  # refuse absurd requests instead of buffering forever
 

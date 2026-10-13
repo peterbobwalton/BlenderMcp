@@ -1,18 +1,18 @@
 """Start a throw-away Blender for the e2e tests, so they never touch your working scene.
 
     blender --factory-startup --python tests/start_test_blender.py
-    $env:BLENDER_MCP_PORT=9879; python tests/mcp_e2e.py
+    $env:BLENDER_MCP_PORT=9849; python tests/mcp_e2e.py
 
 Loads the add-on as installed in your user extensions folder (falls back to the repo copy;
 set BLENDER_MCP_FROM_REPO=1 to test the repo copy before installing)
-and starts the bridge on port 9879 (or $BLENDER_MCP_PORT).
+and starts the bridge on port 9849 (or $BLENDER_MCP_PORT).
 """
 import os
 import sys
 
 import bpy
 
-port = int(os.environ.get("BLENDER_MCP_PORT", "9879"))
+port = int(os.environ.get("BLENDER_MCP_PORT", "9849"))
 ver = ".".join(bpy.app.version_string.split(".")[:2])
 installed = os.path.join(os.environ.get("APPDATA", ""), "Blender Foundation", "Blender", ver, "extensions", "user_default")
 repo = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "blender_addon")
