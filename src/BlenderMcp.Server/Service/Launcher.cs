@@ -46,14 +46,19 @@ internal static class Launcher
         return -1;
     }
 
-    /// <summary>Folders not worth searching for .blend files: drive roots, Windows, Program Files, AppData, the bare
-    /// user profile (Claude Desktop sessions start in such places).</summary>
+    /// <summary>Folders not worth searching for .blend files: drive roots, Windows, Program Files, AppData (except
+    /// folders inside %TEMP%), the bare user profile (Claude Desktop sessions start in such places).</summary>
     public static bool IsSearchable(string folder)
     {
         folder = Normalize(folder);
         if (!Directory.Exists(folder) || Path.GetDirectoryName(folder) is null)
         {
             return false;
+        }
+        // a folder inside %TEMP% (which is under LocalAppData) is a real working folder; %TEMP% itself is not
+        if (Depth(Path.GetTempPath(), folder) > 0)
+        {
+            return true;
         }
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         if (home.Length > 0 && string.Equals(folder, Normalize(home), PathComparison))
