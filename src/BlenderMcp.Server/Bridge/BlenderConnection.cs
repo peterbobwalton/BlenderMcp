@@ -14,13 +14,31 @@ public sealed class BlenderOptions
     public int Port { get; set; } = 9877;
     public TimeSpan DefaultTimeout { get; set; } = TimeSpan.FromSeconds(60);
     public TimeSpan ConnectTimeout { get; set; } = TimeSpan.FromSeconds(3);
+
+    /// <summary>True: go through the bridge service, which picks this session's Blender (default).
+    /// False: talk to the one Blender on Host:Port (set by --port / --host / BLENDER_MCP_PORT).</summary>
+    public bool UseBridge { get; set; }
+
+    public int BridgePort { get; set; } = BridgeDefaults.ServicePort;
+
+    /// <summary>Folders the bridge routes this session by: BLENDER_MCP_WORKDIR, then the working folder.</summary>
+    public List<string> Folders { get; set; } = [];
+
+    /// <summary>Who this session is, as other sessions see it in "Already in use".</summary>
+    public string Owner { get; set; } = "";
+
+    /// <summary>Stays the same across reconnects to the bridge service.</summary>
+    public string SessionId { get; } = Guid.NewGuid().ToString("N");
+
+    public string Endpoint => UseBridge ? $"bridge service 127.0.0.1:{BridgePort}" : $"{Host}:{Port}";
 }
 
 /// <summary>Raised when Blender reports a failure; surfaced to the model as a tool error.</summary>
 public sealed class BlenderException(string message) : McpException(message);
 
 /// <summary>
-/// One persistent, multiplexed TCP connection to the Blender add-on.
+/// One persistent, multiplexed TCP connection to the Blender add-on, either directly or through the bridge
+/// service (same wire protocol; the service forwards each line to the Blender it picked for this session).
 /// Requests carry an id; responses are matched back by id, so many tool calls
 /// can be in flight at once. Reconnects transparently if Blender restarts.
 /// </summary>
@@ -180,35 +198,129 @@ public sealed class BlenderConnection(BlenderOptions options, ILogger<BlenderCon
             }
 
             link?.Kill(new IOException("Connection to Blender closed"));
-            var client = new TcpClient { NoDelay = true, ReceiveBufferSize = 1 << 20 };
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            cts.CancelAfter(options.ConnectTimeout);
-            try
-            {
-                await client.ConnectAsync(options.Host, options.Port, cts.Token).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                client.Dispose();
-                if (ct.IsCancellationRequested)
-                {
-                    throw;
-                }
-                throw new BlenderException(
-                    $"Cannot reach Blender at {options.Host}:{options.Port} ({ex.GetType().Name}). Open Blender and make sure the " +
-                    "'Blender MCP Bridge (C#)' add-on is enabled and started (View3D > Sidebar > MCP).");
-            }
+            var client = options.UseBridge
+                ? await ConnectServiceAsync(ct).ConfigureAwait(false)
+                : await ConnectAsync(options.Host, options.Port, ct).ConfigureAwait(false)
+                    ?? throw new BlenderException(
+                        $"Cannot reach Blender at {options.Host}:{options.Port}. Open Blender and make sure the " +
+                        "'Blender MCP Bridge (C#)' add-on is enabled and started (View3D > Sidebar > MCP).");
 
             link = new Link(client);
             _ = Task.Run(() => ReadLoopAsync(link));
-            await VerifyPeerAsync(link, ct).ConfigureAwait(false);
+            if (options.UseBridge)
+            {
+                await HelloAsync(link, ct).ConfigureAwait(false);
+            }
+            else
+            {
+                await VerifyPeerAsync(link, ct).ConfigureAwait(false);
+            }
             _link = link;
-            log.LogInformation("Connected to Blender bridge at {Host}:{Port}", options.Host, options.Port);
+            log.LogInformation("Connected to {Endpoint}", options.Endpoint);
             return link;
         }
         finally
         {
             _connectLock.Release();
+        }
+    }
+
+    private async Task<TcpClient?> ConnectAsync(string host, int port, CancellationToken ct)
+    {
+        var client = new TcpClient { NoDelay = true, ReceiveBufferSize = 1 << 20 };
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(options.ConnectTimeout);
+        try
+        {
+            await client.ConnectAsync(host, port, cts.Token).ConfigureAwait(false);
+            return client;
+        }
+        catch (Exception) when (!ct.IsCancellationRequested)
+        {
+            client.Dispose();
+            return null;
+        }
+        catch
+        {
+            client.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>Connects to the bridge service, starting it when none runs (the first session on the PC does).</summary>
+    private async Task<TcpClient> ConnectServiceAsync(CancellationToken ct)
+    {
+        var client = await ConnectAsync("127.0.0.1", options.BridgePort, ct).ConfigureAwait(false);
+        if (client is not null)
+        {
+            return client;
+        }
+        try
+        {
+            var pid = Service.Detached.StartService(options.BridgePort);
+            log.LogInformation("Started the Blender bridge service (process {Pid})", pid);
+        }
+        catch (Exception ex)
+        {
+            throw new BlenderException($"Cannot start the Blender bridge service: {ex.Message}");
+        }
+        for (var i = 0; i < 40; i++)
+        {
+            await Task.Delay(250, ct).ConfigureAwait(false);
+            client = await ConnectAsync("127.0.0.1", options.BridgePort, ct).ConfigureAwait(false);
+            if (client is not null)
+            {
+                return client;
+            }
+        }
+        throw new BlenderException(
+            $"The Blender bridge service did not start on 127.0.0.1:{options.BridgePort}. See {BridgeDefaults.LogFile}.");
+    }
+
+    /// <summary>Tells the bridge service who this session is (session id, folders, owner); it routes on the first command.</summary>
+    private async Task HelloAsync(Link link, CancellationToken ct)
+    {
+        var id = Interlocked.Increment(ref _nextId);
+        var tcs = new TaskCompletionSource<JsonObject>(TaskCreationOptions.RunContinuationsAsynchronously);
+        link.Pending[id] = tcs;
+        JsonObject? reply = null;
+        try
+        {
+            var hello = JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                id,
+                cmd = "bridge.hello",
+                @params = new
+                {
+                    session = options.SessionId,
+                    folders = options.Folders,
+                    owner = options.Owner,
+                    version = BridgeDefaults.Version,
+                },
+            }, Json);
+            await link.Stream.WriteAsync(hello.Append((byte)'\n').ToArray(), ct).ConfigureAwait(false);
+            reply = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(10), ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is TimeoutException or IOException or SocketException)
+        {
+        }
+        catch
+        {
+            link.Kill(new IOException("connect cancelled"));
+            throw;
+        }
+        finally
+        {
+            link.Pending.TryRemove(id, out _);
+        }
+
+        if (reply?["result"]?["bridge"] is null)
+        {
+            link.Kill(new IOException("not the bridge service"));
+            throw new BlenderException(
+                $"Something other than the Blender bridge service is listening on 127.0.0.1:{options.BridgePort}" +
+                (reply?["error"] is { } err ? $" ({err})" : "") +
+                ". Set BLENDER_MCP_BRIDGE_PORT to a free port, or pass --port to talk to one Blender directly.");
         }
     }
 

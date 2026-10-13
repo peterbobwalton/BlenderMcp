@@ -98,7 +98,23 @@ internal static class ClaudeConfig
         var current = servers[name] as JsonObject;
         var entry = current?.DeepClone() as JsonObject ?? new JsonObject();
         entry["command"] = exe;
-        if (port is not null)
+        if (port is null)
+        {
+            // no port: the bridge picks the Blender, so drop a --port left by an older install
+            if (entry["args"] is JsonArray old)
+            {
+                var i = old.Select(a => a?.ToString()).ToList().IndexOf("--port");
+                if (i >= 0)
+                {
+                    old.RemoveAt(i);
+                    if (i < old.Count)
+                    {
+                        old.RemoveAt(i);
+                    }
+                }
+            }
+        }
+        else
         {
             var args = entry["args"] as JsonArray ?? new JsonArray();
             var i = args.Select(a => a?.ToString()).ToList().IndexOf("--port");

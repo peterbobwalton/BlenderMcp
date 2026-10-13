@@ -55,8 +55,10 @@ public static class UtilityTools
         return JsonSerializer.Serialize(new
         {
             connected = true,
-            endpoint = $"{blender.Options.Host}:{blender.Options.Port}",
+            endpoint = blender.Options.Endpoint,
             blender = pong?["blender"]?.GetValue<string>(),
+            blenderPort = pong?["port"]?.GetValue<int>(),
+            file = pong?["file"]?.GetValue<string>() is { Length: > 0 } f ? f : "(unsaved scene)",
             roundTripMs = Math.Round(sw.Elapsed.TotalMilliseconds, 2),
         });
     }

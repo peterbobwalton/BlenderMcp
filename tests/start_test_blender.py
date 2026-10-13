@@ -21,5 +21,8 @@ sys.path.insert(0, repo if use_repo else installed)
 
 import blender_mcp_bridge.server as server  # noqa: E402
 
-server.start("127.0.0.1", port)
+try:
+    server.start("127.0.0.1", port, announce_self=False)  # keep the bridge service from routing sessions here
+except TypeError:  # add-on older than 1.7
+    server.start("127.0.0.1", port)
 print(f"[BlenderMCP test] bridge from {sys.path[0]} on port {port}")

@@ -73,9 +73,12 @@ var
 
 { ---------------------------------------------------------------- helpers }
 
-function GetPort(Param: String): String;
+{ /PORT=<n> ties the entry to one Blender on that port; by default the bridge picks each session's Blender. }
+function GetPortArgs(Param: String): String;
 begin
-  Result := ExpandConstant('{param:PORT|9877}');
+  Result := ExpandConstant('{param:PORT|}');
+  if Result <> '' then
+    Result := ' --port ' + Result;
 end;
 
 procedure AddBlender(const Exe, Ver: String);
@@ -179,7 +182,8 @@ procedure KillServer;
 var
   Code: Integer;
 begin
-  { Claude Desktop keeps the server exe open; stop it so it can be replaced. Claude restarts it. }
+  { Claude Desktop keeps the server exe open, and the bridge service (--service) runs from it too; stop them so it can
+    be replaced. Claude restarts the server, which starts the service again. }
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#ServerExe}', '', SW_HIDE, ewWaitUntilTerminated, Code);
 end;
 
@@ -281,7 +285,7 @@ begin
   if not WizardIsTaskSelected('claude') then
     Exit;
   WizardForm.StatusLabel.Caption := 'Registering with Claude Desktop...';
-  if Exec(ExpandConstant('{app}\server\{#ServerExe}'), '--register --name {#McpName} --port ' + GetPort(''),
+  if Exec(ExpandConstant('{app}\server\{#ServerExe}'), '--register --name {#McpName}' + GetPortArgs(''),
           '', SW_HIDE, ewWaitUntilTerminated, Code) and (Code = 0) then
     ClaudeResult := 'Restart Claude Desktop to load the "{#McpName}" MCP server.'
   else

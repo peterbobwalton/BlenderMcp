@@ -330,7 +330,10 @@ def _set_rna_props(target, props, what):
 
 @command("ping")
 def ping(p):
-    return {"pong": True, "blender": bpy.app.version_string, "time": time.time()}
+    from . import server  # noqa: PLC0415 (server imports handlers)
+    return {"pong": True, "blender": bpy.app.version_string, "time": time.time(),
+            "pid": os.getpid(), "port": server.current_port(),
+            "file": bpy.data.filepath, "dirty": bpy.data.is_dirty}
 
 
 @command("get_scene_info")
