@@ -16,7 +16,7 @@ import time
 
 import bmesh
 import bpy
-from mathutils import Euler, Matrix, Vector
+from mathutils import Euler, Matrix, Quaternion, Vector
 
 from . import imaging
 
@@ -40,11 +40,16 @@ def dispatch(cmd, params):
     if entry is None:
         raise BridgeError(f"Unknown command '{cmd}'. Available: {', '.join(sorted(_COMMANDS))}")
     fn, undo = entry
+    ok = False
     try:
-        return fn(params)
+        result = fn(params)
+        ok = True
+        return result
     finally:
         if undo:
-            _undo_push(f"MCP: {cmd}")
+            # A failed call still gets its own step: it may have changed part of the scene before failing, and
+            # without a step those changes would merge into the user's next undo. Labelled so it reads as such.
+            _undo_push(f"MCP: {cmd}" if ok else f"MCP: {cmd} (failed)")
 
 
 # ---------------------------------------------------------------- helpers
@@ -222,13 +227,48 @@ def _world_bounds(objs):
     return mins, maxs
 
 
+_EULER_ORDERS = {"XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX"}
+
+
+def _euler_order(ob):
+    return ob.rotation_mode if ob.rotation_mode in _EULER_ORDERS else "XYZ"
+
+
+def _get_euler(ob):
+    """The object's rotation as an Euler (radians) whatever its rotation mode (glTF imports use quaternions)."""
+    if ob.rotation_mode == "QUATERNION":
+        return ob.rotation_quaternion.to_euler(_euler_order(ob))
+    if ob.rotation_mode == "AXIS_ANGLE":
+        ang, *axis = ob.rotation_axis_angle
+        return Quaternion(axis, ang).to_euler("XYZ")
+    return ob.rotation_euler.copy()
+
+
+def _set_quat(ob, q):
+    """Writes a rotation in the object's own rotation mode, so it isn't ignored by a quaternion or axis-angle object."""
+    if ob.rotation_mode == "QUATERNION":
+        ob.rotation_quaternion = q
+    elif ob.rotation_mode == "AXIS_ANGLE":
+        axis, ang = q.to_axis_angle()
+        ob.rotation_axis_angle = (ang, *axis)
+    else:
+        ob.rotation_euler = q.to_euler(ob.rotation_mode)
+
+
+def _set_euler(ob, radians):
+    if ob.rotation_mode in _EULER_ORDERS:
+        ob.rotation_euler = Euler(radians, ob.rotation_mode)
+    else:
+        _set_quat(ob, Euler(radians, _euler_order(ob)).to_quaternion())
+
+
 def _summary(ob, detail=False):
     bpy.context.view_layer.update()  # dimensions / matrix_world are stale until the depsgraph runs
     d = {
         "name": ob.name,
         "type": ob.type,
         "location": _r(ob.location),
-        "rotation_deg": _r([math.degrees(a) for a in ob.rotation_euler], 2),
+        "rotation_deg": _r([math.degrees(a) for a in _get_euler(ob)], 2),
         "scale": _r(ob.scale),
         "dimensions": _r(ob.dimensions),
         "parent": ob.parent.name if ob.parent else None,
@@ -504,7 +544,7 @@ def _apply_transform_params(ob, p):
     if loc:
         ob.location = loc
     if rot:
-        ob.rotation_euler = Euler([math.radians(a) for a in rot], ob.rotation_euler.order)
+        _set_euler(ob, [math.radians(a) for a in rot])
     if scl:
         ob.scale = scl
 
@@ -553,7 +593,7 @@ def create_camera(p):
 def _look_at(ob, target):
     d = Vector(target) - ob.location
     if d.length > 1e-9:
-        ob.rotation_euler = d.to_track_quat("-Z", "Y").to_euler()
+        _set_quat(ob, d.to_track_quat("-Z", "Y"))
 
 
 @command("transform_object", undo=True)
@@ -567,7 +607,7 @@ def transform_object(p):
         if loc:
             ob.location = ob.location + Vector(loc)
         if rot:
-            ob.rotation_euler = Euler([a + math.radians(b) for a, b in zip(ob.rotation_euler, rot)], ob.rotation_euler.order)
+            _set_euler(ob, [a + math.radians(b) for a, b in zip(_get_euler(ob), rot)])
         if scl:
             ob.scale = Vector([a * b for a, b in zip(ob.scale, scl)])
     else:
@@ -730,11 +770,11 @@ def apply_modifiers(p):
     """Apply one named modifier, or all of them (stack order) when name is omitted."""
     ob = _mesh_obj(_p(p, "object", required=True))
     name = _p(p, "name")
+    if name and ob.modifiers.get(name) is None:
+        raise BridgeError(f"No modifier '{name}' on {ob.name}")
+    _ensure_object_mode()  # both paths: Edit Mode would overwrite the result and hide unsaved edits from the bake
     before = _tri_count(ob.data)
     if name:
-        if ob.modifiers.get(name) is None:
-            raise BridgeError(f"No modifier '{name}' on {ob.name}")
-        _ensure_object_mode()
         if ob.data.users > 1:
             ob.data = ob.data.copy()
         with bpy.context.temp_override(**_window_ctx(), object=ob, active_object=ob,
@@ -751,8 +791,15 @@ def _bake_evaluated(ob):
     new_me = bpy.data.meshes.new_from_object(ob.evaluated_get(dg), preserve_all_data_layers=True, depsgraph=dg)
     old = ob.data
     name = old.name
-    ob.modifiers.clear()
-    ob.data = new_me
+    try:
+        ob.data = new_me
+    except Exception:
+        bpy.data.meshes.remove(new_me)
+        raise
+    if ob.data != new_me:  # assignment refused (e.g. still in Edit Mode): keep the modifiers, drop the copy
+        bpy.data.meshes.remove(new_me)
+        raise BridgeError(f"Could not replace the mesh of {ob.name}; its modifiers were left as they were.")
+    ob.modifiers.clear()  # only once the baked mesh is in place
     if old.users == 0:
         bpy.data.meshes.remove(old)
     new_me.name = name  # after removing the old mesh, so it doesn't become "name.001"
@@ -1150,7 +1197,7 @@ def validate_asset(p):
     sc = ob.scale
     if any(abs(s - 1.0) > 1e-4 for s in sc):
         add("warning", "unapplied_scale", f"Scale is {_r(sc, 3)}; apply scale before export")
-    if any(abs(a) > 1e-4 for a in ob.rotation_euler):
+    if any(abs(a) > 1e-4 for a in _get_euler(ob)):
         add("info", "unapplied_rotation", "Rotation is not zero; consider applying rotation")
     if (sc.x * sc.y * sc.z) < 0:
         add("error", "negative_scale", "Negative scale flips normals in engines")
@@ -1254,27 +1301,29 @@ def generate_lods(p):
     out = []
     dg = bpy.context.evaluated_depsgraph_get()
     base_me = bpy.data.meshes.new_from_object(ob.evaluated_get(dg), preserve_all_data_layers=True, depsgraph=dg)
-    for i, r in enumerate(ratios):
-        name = f"{ob.name}_LOD{i}"
-        old = bpy.data.objects.get(name)
-        if old:
-            _remove_object_and_mesh(old)
-        lod = bpy.data.objects.new(name, base_me.copy())
-        lod.data.name = name
-        lod.matrix_world = ob.matrix_world.copy()
-        if spacing:
-            lod.location.x += spacing * (i + 1)
-        col.objects.link(lod)
-        if r < 0.999:
-            m = lod.modifiers.new("Decimate", "DECIMATE")
-            m.ratio = float(r)
-            _bake_evaluated(lod)
-            # Decimation scrambles sharp-edge flags; re-derive them so LODs shade like LOD0.
-            sharp_deg = _p(p, "sharp_angle_deg", 35.0)
-            if sharp_deg:
-                _auto_sharp(lod.data, math.radians(float(sharp_deg)))
-        out.append({"name": name, "ratio": r, "tris": _tri_count(lod.data)})
-    bpy.data.meshes.remove(base_me)
+    try:
+        for i, r in enumerate(ratios):
+            name = f"{ob.name}_LOD{i}"
+            old = bpy.data.objects.get(name)
+            if old:
+                _remove_object_and_mesh(old)
+            lod = bpy.data.objects.new(name, base_me.copy())
+            lod.data.name = name
+            lod.matrix_world = ob.matrix_world.copy()
+            if spacing:
+                lod.location.x += spacing * (i + 1)
+            col.objects.link(lod)
+            if r < 0.999:
+                m = lod.modifiers.new("Decimate", "DECIMATE")
+                m.ratio = float(r)
+                _bake_evaluated(lod)
+                # Decimation scrambles sharp-edge flags; re-derive them so LODs shade like LOD0.
+                sharp_deg = _p(p, "sharp_angle_deg", 35.0)
+                if sharp_deg:
+                    _auto_sharp(lod.data, math.radians(float(sharp_deg)))
+            out.append({"name": name, "ratio": r, "tris": _tri_count(lod.data)})
+    finally:
+        bpy.data.meshes.remove(base_me)  # also when a LOD fails, so the full-res copy doesn't linger
     if _p(p, "hide_source", False):
         ob.hide_set(True)
     return {"source": ob.name, "source_tris": base_tris, "collection": col.name, "lods": out}
@@ -1690,7 +1739,8 @@ def batch(p):
         try:
             results.append({"ok": True, "result": fn(s.get("params") or {})})
         except Exception as ex:
-            results.append({"ok": False, "error": f"{type(ex).__name__}: {ex}"})
+            # same format as a top-level call: plain message for our own errors, type name for unexpected ones
+            results.append({"ok": False, "error": str(ex) if isinstance(ex, BridgeError) else f"{type(ex).__name__}: {ex}"})
             if stop:
                 break
     _undo_push(_p(p, "undo_label", "MCP: batch"))

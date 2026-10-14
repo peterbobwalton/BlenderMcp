@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Blender MCP Bridge (C#)",
     "author": "Pete",
-    "version": (1, 7, 0),
+    "version": (1, 7, 1),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > MCP",
     "description": "Local TCP bridge used by the BlenderMcp C# MCP server",
@@ -25,7 +25,7 @@ class MCPBRIDGE_Prefs(bpy.types.AddonPreferences):
     host: bpy.props.StringProperty(name="Host", default="127.0.0.1")
     port: bpy.props.IntProperty(
         name="Port", default=9877, min=1024, max=65535,
-        description="Port to listen on. When another Blender already has it, the next free one of 9880-9899 is used")
+        description="Port to listen on. When another Blender already has it, the next free one of 9850-9869 is used")
     auto_start: bpy.props.BoolProperty(name="Start automatically", default=True)
 
     def draw(self, context):
@@ -44,7 +44,7 @@ class MCPBRIDGE_OT_start(bpy.types.Operator):
         try:
             port = server.start(p.host, p.port, fallback=True)
         except OSError as ex:
-            self.report({"ERROR"}, f"Could not listen on {p.host}:{p.port} or any of 9880-9899: {ex}")
+            self.report({"ERROR"}, f"Could not listen on {p.host}:{p.port} or any of 9850-9869: {ex}")
             return {"CANCELLED"}
         if port != p.port:
             self.report({"INFO"}, f"Port {p.port} is taken (another Blender?), listening on {port}")

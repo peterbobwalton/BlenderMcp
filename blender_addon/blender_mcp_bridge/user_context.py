@@ -11,6 +11,11 @@ from .handlers import _p, _summary, _window_ctx, command
 _state = {"context": None}
 
 
+def forget():
+    """Another .blend was loaded: what the user sent was about the previous file."""
+    _state["context"] = None
+
+
 def capture(context, note):
     """Called by the panel operator (has a real UI context)."""
     vl = context.view_layer

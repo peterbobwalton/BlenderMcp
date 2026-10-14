@@ -4,7 +4,7 @@ A .NET 10 MCP server (official `ModelContextProtocol` C# SDK, stdio) that drives
 session through a small Python add-on. Built for game-asset work (Unreal-friendly defaults).
 
 ```
-Claude session ──stdio──▶ BlenderMcp.Server (C#) ──TCP──▶ bridge service (127.0.0.1:9870) ──TCP 9877 / 9880-9899──▶ blender_mcp_bridge add-on ──▶ bpy (main thread)
+Claude session ──stdio──▶ BlenderMcp.Server (C#) ──TCP──▶ bridge service (127.0.0.1:9870) ──TCP 9877 / 9850-9869──▶ blender_mcp_bridge add-on ──▶ bpy (main thread)
 ```
 
 Several Blenders and several Claude sessions can run at once: the bridge service gives each session its own Blender,
@@ -30,7 +30,7 @@ Run `BlenderMcpSetup-<version>.exe` (build it with `installer\build-installer.ps
   `%APPDATA%\Blender Foundation\Blender\<ver>\extensions\user_default\blender_mcp_bridge`
 - Claude Desktop → `blender-csharp` added to `claude_desktop_config.json` (classic and Microsoft Store builds)
 
-Close Blender first, restart Claude Desktop afterwards. Silent: `BlenderMcpSetup-1.7.0.exe /VERYSILENT /TASKS=claude`
+Close Blender first, restart Claude Desktop afterwards. Silent: `BlenderMcpSetup-1.7.1.exe /VERYSILENT /TASKS=claude`
 (`/PORT=9877` ties the entry to that one Blender instead of using the bridge).
 Uninstall (Settings ▸ Apps) removes the add-on and the Claude config entry.
 
@@ -48,7 +48,7 @@ Compress-Archive -Path blender_addon\blender_mcp_bridge -DestinationPath blender
 ```
 
 It starts listening on `127.0.0.1:9877` automatically (port 9877 so it can run alongside
-other Blender MCP add-ons); a second Blender takes the next free port of 9880-9899. Status, request counts and a start/stop button are in
+other Blender MCP add-ons); a second Blender takes the next free port of 9850-9869. Status, request counts and a start/stop button are in
 **3D Viewport ▸ Sidebar (N) ▸ MCP**.
 
 ### 2. Build the server
@@ -91,7 +91,7 @@ skip the bridge and talk to that one Blender directly. Bridge settings (env of t
 
 Modelled on VsMcp's bridge. Three kinds of process:
 
-- **Blender** with the add-on listens on 9877, or the next free port of 9880-9899 when another Blender has it
+- **Blender** with the add-on listens on 9877, or the next free port of 9850-9869 when another Blender has it
   (up to 21 Blenders). It announces itself in `%LOCALAPPDATA%\BlenderMcp\instances\<port>.json` (port, process id,
   open .blend; rewritten when a file is loaded or saved, deleted when Blender exits) and `ping` returns the same.
 - **The bridge service** (`BlenderMcp.Server.exe --service`) is the one routing table on the PC, on `127.0.0.1:9870`.
@@ -117,7 +117,7 @@ announcement files for a Blender too busy to answer), then:
 
 The `blender_session` tool shows and changes this: `status` (this session's Blender and why, every Blender with its
 file and who uses it, every session), `select target=<port or file name>`, `open path=<.blend or folder>` (uses the
-Blender that has it open, else starts one), `auto` (back to matching by folder), `release` (give the Blender back).
+Blender that has it open, else starts one), `auto` (back to matching by folder), `release` (give the Blender back; the session then has none until `auto`, `select` or `open`).
 `BlenderMcp.Server.exe --list` prints the same status from the current folder. `--port` (or `BLENDER_MCP_PORT`) still
 talks to one Blender directly, without the bridge (the e2e test does).
 
@@ -150,7 +150,7 @@ Blender so it never touches your working scene:
 
 ```powershell
 $blender = "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe"
-$env:BLENDER_MCP_PORT = 9879
+$env:BLENDER_MCP_PORT = 9849
 & $blender --factory-startup --python tests\start_test_blender.py     # leave it open
 & "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe" tests\mcp_e2e.py "$env:APPDATA\BlenderMcp\server\BlenderMcp.Server.exe"
 ```
@@ -158,7 +158,7 @@ $env:BLENDER_MCP_PORT = 9879
 It builds and bakes a game asset, makes LODs/collision/sockets, exports for Unreal, renders views, and runs
 animates and rigs a test character and round-trips its clips through FBX, and runs
 regression checks (bad requests, reconnects, exclusive port, convex hulls, degrees, AO occlusion…).
-Report and images go to `tests\out`. Avoid port 9878 - the UnrealMcp bridge uses it.
+Report and images go to `tests\out`. Avoid ports 9878-9899: the UnrealMcp bridges use them.
 
 The bridge test starts two throw-away Blenders on temp .blend files and several sessions against its own service
 port (9871), and checks routing by file, "Already in use", status, select and release (`--launch` also checks that the

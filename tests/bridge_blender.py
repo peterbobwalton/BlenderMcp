@@ -1,5 +1,5 @@
 """Throw-away Blender for tests/bridge_test.py: loads the repo's add-on, listens on the first free bridge port
-(9877, 9880-9899) and announces itself, then saves its empty scene as the .blend given after '--'.
+(9877, 9850-9869) and announces itself, then saves its empty scene as the .blend given after '--'.
 
     blender --factory-startup --python tests/bridge_blender.py -- C:\\temp\\a\\a.blend
 """

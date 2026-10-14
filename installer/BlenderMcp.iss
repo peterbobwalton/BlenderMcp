@@ -57,6 +57,8 @@ Filename: "{app}\server\{#ServerExe}"; Parameters: "--unregister --name {#McpNam
 
 [UninstallDelete]
 Type: files; Name: "{app}\install-state.ini"
+; the bridge service's log and the Blenders' announcement files
+Type: filesandordirs; Name: "{localappdata}\BlenderMcp"
 
 [Code]
 const

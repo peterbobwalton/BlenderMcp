@@ -252,8 +252,10 @@ def insert_keyframes(p):
         for dp, val in (k.get("properties") or {}).items():
             try:
                 owner, attr = (tgt.path_resolve(dp.rsplit(".", 1)[0]), dp.rsplit(".", 1)[1]) if "." in dp else (tgt, dp)
-                if isinstance(getattr(owner, attr), float) and owner.bl_rna.properties[attr].subtype in ("ANGLE",):
-                    val = math.radians(val)
+                rp = owner.bl_rna.properties.get(attr)
+                if rp is not None and rp.type == "FLOAT" and rp.subtype in ("ANGLE", "EULER"):
+                    # degrees, scalars and arrays alike (as set_property)
+                    val = [math.radians(v) for v in val] if isinstance(val, (list, tuple)) else math.radians(val)
                 setattr(owner, attr, val)
                 owner.keyframe_insert(attr, frame=f)
                 count += 1
@@ -717,6 +719,11 @@ def create_armature(p):
     for b in spec:
         if b.get("parent") and b["parent"] not in names:
             raise BridgeError(f"Bone '{b['name']}': parent '{b['parent']}' is not in the list")
+        # checked before anything is created, so a bad bone leaves no half-built rig behind
+        head = Vector(_vec(b.get("head") or [0, 0, 0], name=f"{b['name']}.head"))
+        tail = Vector(_vec(b.get("tail") or [0, 0.1, 0], name=f"{b['name']}.tail"))
+        if (tail - head).length < 1e-5:
+            raise BridgeError(f"Bone '{b['name']}' has zero length")
     data = bpy.data.armatures.new(name)
     ob = bpy.data.objects.new(name, data)
     _collection(_p(p, "collection"), create=True).objects.link(ob)
@@ -729,8 +736,6 @@ def create_armature(p):
             eb = ebs.new(b["name"])
             eb.head = _vec(b.get("head") or [0, 0, 0], name=f"{b['name']}.head")
             eb.tail = _vec(b.get("tail") or [0, 0.1, 0], name=f"{b['name']}.tail")
-            if (eb.tail - eb.head).length < 1e-5:
-                raise BridgeError(f"Bone '{b['name']}' has zero length")
             eb.roll = math.radians(float(b.get("roll") or 0))
             eb.use_deform = b.get("deform") is not False
             made[b["name"]] = eb
@@ -1165,25 +1170,28 @@ def _export_copies(arm, meshes, objs, datas, renamed, scale):
     copies = {}
     for m in meshes:
         mc = m.copy()
+        objs.append(mc)  # registered at once, so the caller removes it even if the steps below fail
         others = [md for md in m.modifiers if md.type != "ARMATURE" and md.show_viewport]
         if others:  # bake the other modifiers first so the x100 scale can't change their result (bevel widths...)
             arms = [(md, md.show_viewport) for md in m.modifiers if md.type == "ARMATURE"]
-            for md, _ in arms:
-                md.show_viewport = False
-            dg = bpy.context.evaluated_depsgraph_get()
-            dg.update()
-            me = bpy.data.meshes.new_from_object(m.evaluated_get(dg), preserve_all_data_layers=True, depsgraph=dg)
-            for md, v in arms:
-                md.show_viewport = v
+            try:
+                for md, _ in arms:
+                    md.show_viewport = False
+                dg = bpy.context.evaluated_depsgraph_get()
+                dg.update()
+                me = bpy.data.meshes.new_from_object(m.evaluated_get(dg), preserve_all_data_layers=True, depsgraph=dg)
+            finally:
+                for md, v in arms:  # the user's mesh must deform again whatever happens
+                    md.show_viewport = v
+            datas.append(me)
             mc.data = me
             for md in list(mc.modifiers):
                 if md.type != "ARMATURE":
                     mc.modifiers.remove(md)
         else:
             mc.data = m.data.copy()
-        datas.append(mc.data)
+            datas.append(mc.data)
         coll.objects.link(mc)
-        objs.append(mc)
         for md in mc.modifiers:
             if md.type == "ARMATURE":
                 md.object = rig
@@ -1418,6 +1426,7 @@ def _transfer_pose(src_arm, src_act, dst_arm, name):
     prev_rot = {}
     keyed = []
     saved_frame = (sc.frame_current, sc.frame_subframe)
+    done = False
     try:
         for f in frames:
             sc.frame_set(f)
@@ -1459,15 +1468,30 @@ def _transfer_pose(src_arm, src_act, dst_arm, name):
                 for prop in ("location", rprop, "scale"):
                     pb.keyframe_insert(prop, frame=f, group=bone.name)
             keyed.append(f)
+        done = True
     finally:
         for pb in dst_arm.pose.bones:  # don't leave the last frame behind in channels other clips don't key
             loc, q, e, aa, scl = saved_pose[pb.name]
             pb.location, pb.rotation_quaternion, pb.rotation_euler, pb.rotation_axis_angle, pb.scale = loc, q, e, aa, scl
+        if not done:  # failed half-way: the target keeps its own clip, and the partial one goes
+            dad.action = saved
+            bpy.data.actions.remove(act)
         sc.frame_set(saved_frame[0], subframe=saved_frame[1])
     act.use_fake_user = True
     if saved is not None:
         dad.action = saved
     return act
+
+
+def _remove_imported(objs):
+    """Removes objects an import created, and their mesh or armature data once nothing else uses it."""
+    for o in objs:
+        data = o.data
+        bpy.data.objects.remove(o, do_unlink=True)
+        if data is not None and getattr(data, "users", 1) == 0:
+            for coll in (bpy.data.meshes, bpy.data.armatures):
+                if data.name in coll and coll[data.name] == data:
+                    coll.remove(data)
 
 
 @command("import_animation", undo=True)
@@ -1534,29 +1558,34 @@ def import_animation(p):
         # Blender rebuilds bone rolls on import), so local keys can't be copied. Transfer the world-space pose
         # frame by frame instead - this also absorbs unit differences (cm vs m).
         baked = []
-        for a in new_acts:
-            if not _action_bones(a):  # shape-key / object actions in the file: nothing to put on the rig
+        try:
+            for a in new_acts:
+                if not _action_bones(a):  # shape-key / object actions in the file: nothing to put on the rig
+                    if not _p(p, "keep_imported", False):
+                        bpy.data.actions.remove(a)  # their objects are removed below
+                    continue
+                name = a.name
+                a.name = name + "__src"
+                baked.append(_transfer_pose(imp_arm, a, target, name))
                 if not _p(p, "keep_imported", False):
-                    bpy.data.actions.remove(a)  # their objects are removed below
-                continue
-            name = a.name
-            a.name = name + "__src"
-            baked.append(_transfer_pose(imp_arm, a, target, name))
+                    bpy.data.actions.remove(a)
+                else:
+                    a.name = name + "_source"
+        except Exception:
+            # don't leave the half-imported file behind: its objects, its clips and the clips baked so far
             if not _p(p, "keep_imported", False):
-                bpy.data.actions.remove(a)
-            else:
-                a.name = name + "_source"
+                for a in new_acts + baked:
+                    try:
+                        bpy.data.actions.remove(a)
+                    except ReferenceError:
+                        pass  # already removed above
+                _remove_imported(new_objs)
+            raise
         new_acts = baked
         if baked:
             _assign_action(target, baked[0])
         if not _p(p, "keep_imported", False):
-            for o in new_objs:
-                data = o.data
-                bpy.data.objects.remove(o, do_unlink=True)
-                if data is not None and getattr(data, "users", 1) == 0:
-                    for coll in (bpy.data.meshes, bpy.data.armatures):
-                        if data.name in coll and coll[data.name] == data:
-                            coll.remove(data)
+            _remove_imported(new_objs)
             out["imported_objects_removed"] = True
         out["target"] = target.name
     for a in new_acts:

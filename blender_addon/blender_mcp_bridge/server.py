@@ -25,9 +25,9 @@ import bpy
 
 from . import handlers
 
-# Ports tried when the configured one is taken (another Blender has it): 9877, then 9880-9899.
-# 9878 is UnrealMcp's, 9879 the e2e test Blender's. Keep in sync with BridgeDefaults.BlenderPorts (C#).
-PORTS = [9877] + list(range(9880, 9900))
+# Ports tried when the configured one is taken (another Blender has it): 9877, then 9850-9869.
+# 9878-9899 belong to the UnrealMcp bridges, 9849 to the e2e test Blender. Keep in sync with BridgeDefaults.BlenderPorts (C#).
+PORTS = [9877] + list(range(9850, 9870))
 
 _MAX_LINE_BYTES = 64 << 20  # refuse absurd requests instead of buffering forever
 
@@ -136,11 +136,20 @@ class _Client:
             return
         self.alive = False
         self.out.put(None)
-        try:
-            self.sock.close()
-        except OSError:
-            pass
+        _close_socket(self.sock)
         self.server.forget(self)
+
+
+def _close_socket(sock):
+    """shutdown first: on Linux/macOS close() alone doesn't wake a thread blocked in recv()/accept() or tell the peer."""
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+    try:
+        sock.close()
+    except OSError:
+        pass
 
 
 def _json_default(o):
@@ -186,8 +195,12 @@ class BridgeServer:
                 continue
             except OSError:
                 break
-            s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            s.settimeout(None)
+            try:
+                s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                s.settimeout(None)
+            except OSError:  # reset before it was set up: drop this one, keep accepting
+                _close_socket(s)
+                continue
             c = _Client(s, addr, self)
             with self._lock:
                 self.clients.add(c)
@@ -201,10 +214,8 @@ class BridgeServer:
 
     def stop(self):
         self.running = False
-        try:
-            self._sock.close()
-        except Exception:
-            pass
+        if self._sock is not None:
+            _close_socket(self._sock)
         with self._lock:
             clients = list(self.clients)
         for c in clients:
@@ -278,14 +289,28 @@ def announce():
         "file": bpy.data.filepath,
         "blender": bpy.app.version_string,
     }
+    path = _announce_path(srv.port)
+    tmp = path + ".tmp"
     try:
         os.makedirs(_instances_dir(), exist_ok=True)
-        tmp = _announce_path(srv.port) + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f)
-        os.replace(tmp, _announce_path(srv.port))
     except OSError as ex:
-        print(f"[BlenderMCP] could not write {_announce_path(srv.port)}: {ex}")
+        print(f"[BlenderMCP] could not write {tmp}: {ex}")
+        return
+    # the bridge service may be reading the file this moment (Windows then refuses the replace): retry briefly
+    for attempt in range(10):
+        try:
+            os.replace(tmp, path)
+            return
+        except OSError as ex:
+            if attempt == 9:
+                print(f"[BlenderMCP] could not write {path}: {ex}")
+            time.sleep(0.02)
+    try:
+        os.remove(tmp)
+    except OSError:
+        pass
 
 
 def _unannounce(srv):
@@ -296,7 +321,12 @@ def _unannounce(srv):
         with open(path, encoding="utf-8") as f:
             mine = json.load(f).get("pid") == os.getpid()
         if mine:
-            os.remove(path)
+            for _ in range(10):  # the bridge service may be reading it this moment
+                try:
+                    os.remove(path)
+                    break
+                except PermissionError:
+                    time.sleep(0.02)
     except (OSError, ValueError):
         pass
 
@@ -304,6 +334,18 @@ def _unannounce(srv):
 @bpy.app.handlers.persistent
 def _on_file_changed(*_args):
     announce()
+
+
+@bpy.app.handlers.persistent
+def _on_load(*_args):
+    announce()
+    # scene-diff tokens and the 'Send to Claude' context describe the file that was open before
+    from . import layout, user_context  # noqa: PLC0415 (they import handlers, which server imports)
+    layout.forget_snapshots()
+    user_context.forget()
+
+
+_FILE_HANDLERS = (("load_post", _on_load), ("save_post", _on_file_changed))
 
 
 def _at_exit():
@@ -333,9 +375,10 @@ def start(host="127.0.0.1", port=9877, fallback=False, announce_self=True):
         srv.announce = announce_self
         _state["server"] = srv
         announce()
-        for handlers_list in (bpy.app.handlers.load_post, bpy.app.handlers.save_post):
-            if _on_file_changed not in handlers_list:
-                handlers_list.append(_on_file_changed)
+        for event, fn in _FILE_HANDLERS:
+            handlers_list = getattr(bpy.app.handlers, event)
+            if fn not in handlers_list:
+                handlers_list.append(fn)
         print(f"[BlenderMCP] bridge listening on {host}:{p}" + ("" if p == port else f" (port {port} is taken)"))
         return p
     raise error
@@ -348,9 +391,10 @@ def stop():
         _unannounce(srv)
         _state["server"] = None
         print("[BlenderMCP] bridge stopped")
-    for handlers_list in (bpy.app.handlers.load_post, bpy.app.handlers.save_post):
-        if _on_file_changed in handlers_list:
-            handlers_list.remove(_on_file_changed)
+    for event, fn in _FILE_HANDLERS:
+        handlers_list = getattr(bpy.app.handlers, event)
+        if fn in handlers_list:
+            handlers_list.remove(fn)
     if bpy.app.timers.is_registered(_pump):
         bpy.app.timers.unregister(_pump)
 

@@ -40,6 +40,12 @@ internal static class BridgeService
     private static readonly TimeSpan IdleExit = TimeSpan.FromMinutes(10);
     private static readonly Router Router = new();
 
+    /// <summary>Longest line accepted from a session or a Blender, as the add-on's own limit.</summary>
+    private const int MaxLineBytes = 64 << 20;
+
+    /// <summary>Open connections, including ones that have not said bridge.hello yet (so idle exit can't drop them).</summary>
+    private static int _connections;
+
     public static int Run(int port)
     {
         ServiceLog.File = BridgeDefaults.LogFile;
@@ -60,19 +66,62 @@ internal static class BridgeService
             while (true)
             {
                 await Task.Delay(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
-                if (Router.SessionCount == 0 && DateTime.UtcNow - Router.IdleSince > IdleExit)
+                if (Volatile.Read(ref _connections) > 0 || !Router.IdleFor(IdleExit))
                 {
-                    ServiceLog.Write("no sessions for 10 minutes; exiting");
-                    Environment.Exit(0);
+                    continue;
                 }
+                // stop taking connections first, so none is accepted and then dropped by the exit
+                listener.Stop();
+                if (Volatile.Read(ref _connections) > 0)
+                {
+                    try
+                    {
+                        listener.Start();
+                        continue;
+                    }
+                    catch (SocketException)
+                    {
+                        // another service took the port in that moment; it serves new sessions, this one ends
+                    }
+                }
+                ServiceLog.Write("no sessions for 10 minutes; exiting");
+                Environment.Exit(0);
             }
         });
 
         while (true)
         {
-            var client = listener.AcceptTcpClient();
+            TcpClient client;
+            try
+            {
+                client = listener.AcceptTcpClient();
+            }
+            catch (SocketException ex)
+            {
+                // e.g. a connection reset before it was accepted, or the listener being restarted by the idle check
+                ServiceLog.Write($"accept failed ({ex.SocketErrorCode}); still listening");
+                Thread.Sleep(100);
+                continue;
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException)
+            {
+                // listener stopped for a moment by the idle check
+                Thread.Sleep(100);
+                continue;
+            }
             client.NoDelay = true;
-            _ = Task.Run(() => HandleClientAsync(client));
+            Interlocked.Increment(ref _connections);
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await HandleClientAsync(client).ConfigureAwait(false);
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref _connections);
+                }
+            });
         }
     }
 
@@ -161,6 +210,12 @@ internal static class BridgeService
                     }
 
                     session.LastCall = DateTime.Now;
+                    if (cmd == "bridge.hello")
+                    {
+                        // already introduced on this connection: answer again rather than "unknown command"
+                        await writer.ReplyAsync(id, new JsonObject { ["bridge"] = BridgeDefaults.Version }).ConfigureAwait(false);
+                        continue;
+                    }
                     if (cmd.StartsWith("bridge.", StringComparison.Ordinal))
                     {
                         var s = session;
@@ -199,7 +254,8 @@ internal static class BridgeService
         {
             owner = $"Claude session in {folders.LastOrDefault() ?? "?"}";
         }
-        return Router.Add(id, folders, owner);
+        var blender = (string?)p?["blender"];
+        return Router.Add(id, folders, owner, string.IsNullOrWhiteSpace(blender) ? null : blender);
     }
 
     private static async Task ForwardAsync(Session s, ClientWriter writer, byte[] line, JsonNode? id, string cmd)
@@ -331,15 +387,29 @@ internal static class BridgeService
                     await s.RouteLock.WaitAsync().ConfigureAwait(false);
                     try
                     {
+                        RefuseWhileRunning(s, cmd);
                         var was = s.Port;
                         s.Link?.Close();
                         s.Link = null;
-                        Router.Auto(s);
-                        result = new JsonObject
+                        if (cmd == "bridge.release")
                         {
-                            ["released_port"] = was,
-                            ["next"] = "the next call routes by this session's folder again",
-                        };
+                            Router.Release(s);
+                            result = new JsonObject
+                            {
+                                ["released_port"] = was,
+                                ["next"] = "that Blender is free for other sessions; this session has none until blender_session " +
+                                    "action=auto, select or open",
+                            };
+                        }
+                        else
+                        {
+                            Router.Auto(s);
+                            result = new JsonObject
+                            {
+                                ["released_port"] = was,
+                                ["next"] = "the next call routes by this session's folder again",
+                            };
+                        }
                     }
                     finally
                     {
@@ -368,6 +438,7 @@ internal static class BridgeService
         await s.RouteLock.WaitAsync().ConfigureAwait(false);
         try
         {
+            RefuseWhileRunning(s, "the switch");
             var i = await choose().ConfigureAwait(false);
             if (s.Link is { } old && (old.Target.Port != i.Port || old.Target.Pid != i.Pid))
             {
@@ -381,6 +452,18 @@ internal static class BridgeService
         finally
         {
             s.RouteLock.Release();
+        }
+    }
+
+    /// <summary>Closing the link now would report the session's running commands as lost although Blender is still
+    /// running them, so the session must wait for them before it switches or releases its Blender.</summary>
+    private static void RefuseWhileRunning(Session s, string what)
+    {
+        if (s.Link is { Dead: false } link && !link.InFlight.IsEmpty)
+        {
+            throw new BridgeError(
+                $"{link.InFlight.Count} command(s) are still running on the Blender on port {link.Target.Port} " +
+                $"({string.Join(", ", link.InFlight.Values.Distinct().Take(5))}). Wait for them to finish, then retry {what}.");
         }
     }
 
@@ -411,6 +494,10 @@ internal static class BridgeService
                 line.SetLength(0);
             }
             line.Write(buffer, start, n - start);
+            if (line.Length > MaxLineBytes)
+            {
+                throw new IOException($"line longer than {MaxLineBytes >> 20} MB without a newline; dropping the connection");
+            }
         }
     }
 

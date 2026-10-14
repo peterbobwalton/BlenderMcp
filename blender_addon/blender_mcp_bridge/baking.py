@@ -63,6 +63,8 @@ def bake_maps(p):
     ray_vis = {}
     results = []
     created = []  # nodes added for the map being baked, removed again if it fails
+    reused = []  # (node, its previous image) for the map being baked, put back if it fails
+    pending = None  # the image being baked; replaces the previous bake only once it is baked and saved
     try:
         for o in unhidden:
             o.hide_set(False)
@@ -80,10 +82,7 @@ def bake_maps(p):
         for name in maps:
             btype, cs, socket = _MAPS[name]
             img_name = f"T_{base}_{_SUFFIX[name]}"
-            old = bpy.data.images.get(img_name)
-            if old is not None:
-                bpy.data.images.remove(old)
-            img = bpy.data.images.new(img_name, size, size, alpha=False, float_buffer=False)
+            img = pending = bpy.data.images.new(img_name + "_baking", size, size, alpha=False, float_buffer=False)
             img.colorspace_settings.name = cs
             if name == "normal":
                 img.generated_color = (0.5, 0.5, 1.0, 1.0)
@@ -95,6 +94,8 @@ def bake_maps(p):
                 if n is None:
                     n = nt.nodes.new("ShaderNodeTexImage")
                     created.append((nt, n))
+                else:
+                    reused.append((n, n.image))
                 n.image = img
                 n.label = img_name
                 for other in nt.nodes:
@@ -125,6 +126,12 @@ def bake_maps(p):
             img.file_format = "PNG"
             img.save()
             img.source = "FILE"  # now backed by the saved file
+            old = bpy.data.images.get(img_name)
+            if old is not None:
+                old.user_remap(img)  # anything else using the previous bake gets the new one
+                bpy.data.images.remove(old)
+            img.name = img_name
+            pending = None
             for m, n in nodes:
                 bsdf = _principled(m)
                 n.location = (bsdf.location.x - 600, bsdf.location.y - 300 * (list(_MAPS).index(name)))
@@ -140,12 +147,20 @@ def bake_maps(p):
                         m.node_tree.links.new(n.outputs["Color"], bsdf.inputs[socket])
             results.append({"map": name, "image": img_name, "path": path, "connected": bool(connect and socket)})
             created.clear()  # this map is done; keep its nodes
+            reused.clear()
     except Exception:
         for nt, n in created:
             try:
                 nt.nodes.remove(n)
             except Exception:
                 pass
+        for n, prev in reused:
+            try:
+                n.image = prev  # the previous bake stays in use
+            except Exception:
+                pass
+        if pending is not None:
+            bpy.data.images.remove(pending)
         raise
     finally:
         for attr, v in ray_vis.items():

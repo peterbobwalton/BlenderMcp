@@ -18,7 +18,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EXE = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "publish", "BlenderMcp.Server.exe")
 OUT = sys.argv[2] if len(sys.argv) > 2 else os.path.join(ROOT, "tests", "out")
 # Run against a throw-away Blender instead of your working session: start one with
-#   blender --factory-startup --python tests/start_test_blender.py  (bridge on 9879), then set BLENDER_MCP_PORT=9879
+#   blender --factory-startup --python tests/start_test_blender.py  (bridge on 9849), then set BLENDER_MCP_PORT=9849
 PORT = int(os.environ.get("BLENDER_MCP_PORT", "9877"))
 os.makedirs(OUT, exist_ok=True)
 

@@ -8,14 +8,18 @@ namespace BlenderMcp.Server.Service;
 internal sealed class BridgeError(string message) : Exception(message);
 
 /// <summary>A Blender this service started for a session, until its add-on answers.</summary>
-internal sealed record PendingLaunch(int Pid, string? File, DateTime Started);
+/// <remarks>Pin: keep the session on this Blender once it answers (blender_session open), as select does.</remarks>
+internal sealed record PendingLaunch(int Pid, string? File, DateTime Started, bool Pin);
 
 /// <summary>One Claude session (one BlenderMcp.Server process) connected to the service.</summary>
-internal sealed class Session(string id, List<string> folders, string owner)
+internal sealed class Session(string id, List<string> folders, string owner, string? blenderExe)
 {
     public string Id { get; } = id;
     public List<string> Folders { get; } = folders;
     public string Owner { get; } = owner;
+
+    /// <summary>BLENDER_MCP_BLENDER from this session's own environment; the service's is only the first session's.</summary>
+    public string? BlenderExe { get; } = blenderExe;
     public DateTime Since { get; } = DateTime.Now;
     public DateTime LastCall { get; set; } = DateTime.Now;
 
@@ -27,6 +31,10 @@ internal sealed class Session(string id, List<string> folders, string owner)
 
     /// <summary>Set by blender_session select/open: this Blender, not folder matching.</summary>
     public bool Pinned { get; set; }
+
+    /// <summary>Set by blender_session release: no Blender for this session until select, open or auto.</summary>
+    public bool Released { get; set; }
+
     public PendingLaunch? Launch { get; set; }
 
     /// <summary>Connection to the routed Blender; owned by BridgeService.</summary>
@@ -49,6 +57,7 @@ internal sealed class Session(string id, List<string> folders, string owner)
         ["file"] = Port is null ? null : File.Length > 0 ? File : "(unsaved scene)",
         ["why"] = Port is null ? null : Reason,
         ["pinned"] = Pinned,
+        ["released"] = Released,
         ["starting_blender"] = Launch is null ? null : Launch.File ?? "(empty scene)",
     };
 }
@@ -66,31 +75,44 @@ internal sealed class Router
 
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly ConcurrentDictionary<string, Session> _sessions = new();
+    private readonly object _idleLock = new();
+    private DateTime _idleSince = DateTime.UtcNow;
 
-    public DateTime IdleSince { get; private set; } = DateTime.UtcNow;
-
-    public int SessionCount => _sessions.Count;
-
-    public Session Add(string id, List<string> folders, string owner)
+    /// <summary>True when no session has been connected for longer than <paramref name="span"/>.</summary>
+    public bool IdleFor(TimeSpan span)
     {
-        var s = new Session(id, folders, owner);
-        _sessions[id + "/" + Guid.NewGuid().ToString("N")[..6]] = s;
+        lock (_idleLock)
+        {
+            return _sessions.IsEmpty && DateTime.UtcNow - _idleSince > span;
+        }
+    }
+
+    public Session Add(string id, List<string> folders, string owner, string? blenderExe)
+    {
+        var s = new Session(id, folders, owner, blenderExe);
+        lock (_idleLock)
+        {
+            _sessions[id + "/" + Guid.NewGuid().ToString("N")[..6]] = s;
+        }
         ServiceLog.Write($"session {Short(id)} connected: {owner}; folder(s) {string.Join(", ", folders)}");
         return s;
     }
 
     public void Remove(Session s)
     {
-        foreach (var (key, value) in _sessions)
+        lock (_idleLock)
         {
-            if (ReferenceEquals(value, s))
+            foreach (var (key, value) in _sessions)
             {
-                _sessions.TryRemove(key, out _);
+                if (ReferenceEquals(value, s))
+                {
+                    _sessions.TryRemove(key, out _);
+                }
             }
-        }
-        if (_sessions.IsEmpty)
-        {
-            IdleSince = DateTime.UtcNow;
+            if (_sessions.IsEmpty)
+            {
+                _idleSince = DateTime.UtcNow;
+            }
         }
         ServiceLog.Write($"session {Short(s.Id)} ended{(s.Port is { } p ? $"; Blender on port {p} is free again" : "")}");
     }
@@ -146,6 +168,12 @@ internal sealed class Router
     /// <summary>The Blender this session's commands go to, routing (and starting Blender) when needed.</summary>
     public async Task<BlenderInstance> ChooseAsync(Session s)
     {
+        if (s.Released)
+        {
+            throw new BridgeError(
+                "This session released its Blender (blender_session action=release). Call blender_session action=auto to route " +
+                "by folder again, action=select for an open Blender, or action=open to start one.");
+        }
         if (s.Launch is null)
         {
             var all = await Discovery.ListAsync().ConfigureAwait(false);
@@ -211,7 +239,7 @@ internal sealed class Router
             {
                 throw new BridgeError($"Already in use: Blender is being started on {blends[0]} for another Claude session ({other.Label}).");
             }
-            StartLocked(s, all, blends[0]);
+            StartLocked(s, all, blends[0], pin: false);
             return null;
         }
         if (blends.Count > 1)
@@ -241,19 +269,20 @@ internal sealed class Router
                 ". Call blender_session action=select target=<port or file name>, or action=open path=<.blend>.");
         }
 
-        StartLocked(s, all, null);
+        StartLocked(s, all, null, pin: false);
         return null;
     }
 
-    private void StartLocked(Session s, List<BlenderInstance> all, string? file)
+    private void StartLocked(Session s, List<BlenderInstance> all, string? file, bool pin)
     {
         var launching = _sessions.Values.Count(o => o.Launch is not null);
         if (all.Count + launching >= BridgeDefaults.BlenderPorts.Length)
         {
             throw new BridgeError($"{all.Count} Blenders are running (at most {BridgeDefaults.BlenderPorts.Length}); close one first.");
         }
-        var exe = Launcher.FindBlender() ?? throw new BridgeError(
-            "Cannot find blender.exe to start. Open Blender yourself, or set BLENDER_MCP_BLENDER to its path in the MCP entry's env.");
+        var exe = Launcher.FindBlender(s.BlenderExe) ?? throw new BridgeError(
+            "Cannot find blender.exe to start. Open Blender yourself, or set BLENDER_MCP_BLENDER to its path in the MCP entry's env " +
+            "(then restart this Claude session).");
         int pid;
         try
         {
@@ -263,7 +292,7 @@ internal sealed class Router
         {
             throw new BridgeError($"Could not start {exe}: {ex.Message}");
         }
-        s.Launch = new PendingLaunch(pid, file, DateTime.UtcNow);
+        s.Launch = new PendingLaunch(pid, file, DateTime.UtcNow, pin);
         s.Port = null;
         ServiceLog.Write($"session {Short(s.Id)}: started Blender (pid {pid}) on {file ?? "an empty scene"}");
     }
@@ -284,6 +313,7 @@ internal sealed class Router
                 if (up is not null)
                 {
                     Assign(s, up, launch.File is null ? "started for this session (empty scene)" : $"started for this session on {launch.File}");
+                    s.Pinned = launch.Pin;  // also when it answers on a later call, after open gave up waiting
                     return up;
                 }
                 if (launch.Pid > 0 && !Discovery.IsBlender(launch.Pid) && DateTime.UtcNow - launch.Started > TimeSpan.FromSeconds(5))
@@ -359,6 +389,7 @@ internal sealed class Router
                 throw InUse(i, holder);
             }
             s.Launch = null;
+            s.Released = false;
             Assign(s, i, "selected with blender_session");
             s.Pinned = true;
             return i;
@@ -406,6 +437,7 @@ internal sealed class Router
                 var free = open.FirstOrDefault(i => Holder(i, s) is null);
                 if (free is not null)
                 {
+                    s.Released = false;
                     Assign(s, free, $"opened {file} with blender_session (it was already open)");
                     s.Pinned = true;
                     return free;
@@ -420,22 +452,29 @@ internal sealed class Router
                 }
             }
             s.Pinned = false;
-            StartLocked(s, all, file);
+            s.Released = false;
+            StartLocked(s, all, file, pin: true);
         }
         finally
         {
             _gate.Release();
         }
-        var started = await WaitForLaunchAsync(s).ConfigureAwait(false);
-        s.Pinned = true;
-        return started;
+        return await WaitForLaunchAsync(s).ConfigureAwait(false);
     }
 
     /// <summary>Back to routing by folder on the next call.</summary>
     public void Auto(Session s)
     {
         s.Pinned = false;
+        s.Released = false;
         s.Port = null;
         s.Launch = null;
+    }
+
+    /// <summary>Frees the session's Blender for other sessions; this session gets none until select, open or auto.</summary>
+    public void Release(Session s)
+    {
+        Auto(s);
+        s.Released = true;
     }
 }

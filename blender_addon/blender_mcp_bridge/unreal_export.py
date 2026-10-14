@@ -132,11 +132,14 @@ def export_for_unreal(p):
 
     # temporary state
     saved_parent = {o: (o.parent, o.matrix_parent_inverse.copy(), o.matrix_world.copy()) for o in [ob] + lods}
-    saved_world = {o: o.matrix_world.copy() for o in collision + lods + [ob]}
+    # Only what gets moved below, parents first: a collision mesh parented to the asset follows it, and restoring its
+    # world matrix while the asset is still centred would shift it by the asset's location on every export.
+    loose_collision = [c for c in collision if c.parent is None]
+    saved_world = {o: o.matrix_world.copy() for o in [ob] + lods + loose_collision}
     group = None
     offset = Matrix.Translation(-ob.matrix_world.translation) if center else Matrix.Identity(4)
     try:
-        for o in [ob] + [c for c in collision if c.parent is None]:
+        for o in [ob] + loose_collision:
             o.matrix_world = offset @ saved_world[o]
         for o in lods:
             # LODs may sit side by side for comparison (generate_lods spacing); in the file they must overlap LOD0
