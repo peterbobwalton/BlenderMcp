@@ -1000,6 +1000,9 @@ def validate_rig(p):
                                f"and easy retargeting)")
     if arm.name == "Armature":
         _issue(issues, "info", "Armature object is named 'Armature': Unreal drops it, so no extra root bone")
+    elif arm.get(FBX_ROOT_PROP):
+        _issue(issues, "info", f"Armature object came from an FBX whose top node '{arm[FBX_ROOT_PROP]}' is a skeleton "
+                               f"bone; export_animation_for_unreal keeps that name so Unreal keeps the bone")
     else:
         _issue(issues, "info", f"Armature object '{arm.name}' would become an extra root bone in Unreal; "
                                f"export_animation_for_unreal renames it to 'Armature' while exporting")
@@ -1147,8 +1150,15 @@ def _bake_clip(arm, rig, name, f0, f1, scale):
     return act
 
 
-def _export_copies(arm, meshes, objs, datas, renamed, scale):
-    """Temporary single-user copies of the rig ('Armature') and its meshes (original names), scaled about the
+FBX_ROOT_PROP = "mcp_fbx_root_node"
+
+
+def _fbx_root_name(name):
+    return re.sub(r"\.\d{3}$", "", name)
+
+
+def _export_copies(arm, meshes, objs, datas, renamed, scale, name="Armature"):
+    """Temporary single-user copies of the rig (named `name`) and its meshes (original names), scaled about the
     origin with the scale applied. Originals are renamed out of the way and restored by the caller."""
     coll = _scene().collection
     rig = arm.copy()
@@ -1157,10 +1167,11 @@ def _export_copies(arm, meshes, objs, datas, renamed, scale):
     rig.animation_data_clear()
     coll.objects.link(rig)
     objs.append(rig)
-    if arm.name == "Armature":
-        renamed.append((arm, arm.name))
-        arm.name = "Armature__mcp_src"
-    rig.name = "Armature"  # Unreal treats a node named 'Armature' as the armature itself: no extra root bone
+    if arm.name == name or bpy.data.objects.get(name) not in (None, rig):
+        squat = arm if arm.name == name else bpy.data.objects[name]
+        renamed.append((squat, squat.name))
+        squat.name = name + "__mcp_src"
+    rig.name = name
     rig.parent = None
     rig.matrix_world = arm.matrix_world.copy()
     for pb in rig.pose.bones:
@@ -1277,6 +1288,13 @@ def export_animation_for_unreal(p):
                    tuple(pb.rotation_axis_angle), pb.scale.copy()) for pb in arm.pose.bones]
     files, clips = [], []
     temp_objs, temp_data, temp_acts, renamed = [], [], [], []
+    # Unreal treats a node named 'Armature' as the armature itself: no extra root bone. A rig imported from an
+    # Unreal FBX is different: its object IS the skeleton's top bone (Root_M, Cow_MAINSHJnt...), and renaming it
+    # dropped that bone, so clips on the original skeleton played rotated (animals sitting upright in PIE).
+    root_name = arm.get(FBX_ROOT_PROP) or _fbx_root_name(arm.name)
+    keep = _p(p, "keep_armature_name")
+    keep = bool(arm.get(FBX_ROOT_PROP)) if keep is None else bool(keep)
+    rig_name = root_name if keep and root_name != "Armature" else "Armature"
     try:
         ad.use_nla = False  # export exactly the clip, not NLA layers on top of it
         squatter = bpy.data.objects.get("Armature")
@@ -1285,7 +1303,7 @@ def export_animation_for_unreal(p):
             squatter.name = "Armature__mcp_tmp"
         # Export temporary copies scaled to centimetres: bones, meshes and keys then arrive in
         # Unreal in its own units with a root bone of scale 1 (metres would put a x100 scale on the root bone).
-        rig, copies = _export_copies(arm, meshes, temp_objs, temp_data, renamed, 100.0 if units_cm else 1.0)
+        rig, copies = _export_copies(arm, meshes, temp_objs, temp_data, renamed, 100.0 if units_cm else 1.0, rig_name)
         # the copies hold centimetre values in a metre scene: 0.01 x the exporter's 100 (m -> cm) = 1, so the
         # file is written 1:1 in centimetres (UnitScaleFactor 1, no scale on any node)
         gscale = 0.01 if units_cm else 1.0
@@ -1513,6 +1531,8 @@ def import_animation(p):
     new_objs = [o for o in bpy.data.objects if o not in before_objs]
     new_acts = [a for a in bpy.data.actions if a not in before_acts]
     imp_arm = next((o for o in new_objs if o.type == "ARMATURE"), None)
+    if imp_arm is not None and _fbx_root_name(imp_arm.name) != "Armature":
+        imp_arm[FBX_ROOT_PROP] = _fbx_root_name(imp_arm.name)
     warnings, clips = [], []
     removed_leaf = []
     if imp_arm is not None:

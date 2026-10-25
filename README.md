@@ -28,9 +28,13 @@ Run `BlenderMcpSetup-<version>.exe` (build it with `installer\build-installer.ps
 - server → `%APPDATA%\BlenderMcp\server\BlenderMcp.Server.exe` (self-contained, no .NET needed)
 - add-on → installed **and enabled** in each Blender 4.2+ you tick, under
   `%APPDATA%\Blender Foundation\Blender\<ver>\extensions\user_default\blender_mcp_bridge`
-- Claude Desktop → `blender-csharp` added to `claude_desktop_config.json` (classic and Microsoft Store builds)
+- Claude → `blender-csharp` added to Claude Code's user config `~\.claude.json`, so every Claude Code session (the
+  desktop app's Code tab too) starts its own connector and gets its own Blender. Our entry is removed from Claude
+  Desktop's `claude_desktop_config.json`: the app runs one shared process per entry there, which every session would
+  share and which hides the Claude Code entry. Without `~\.claude.json` it goes into `claude_desktop_config.json`
+  (classic and Microsoft Store builds), as `--register --desktop` does.
 
-Close Blender first, restart Claude Desktop afterwards. Silent: `BlenderMcpSetup-1.7.1.exe /VERYSILENT /TASKS=claude`
+Close Blender first, restart Claude Desktop afterwards. Silent: `BlenderMcpSetup-1.7.2.exe /VERYSILENT /TASKS=claude`
 (`/PORT=9877` ties the entry to that one Blender instead of using the bridge).
 Uninstall (Settings ▸ Apps) removes the add-on and the Claude config entry.
 
