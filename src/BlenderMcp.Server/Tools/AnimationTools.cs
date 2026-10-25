@@ -297,12 +297,14 @@ public static class UnrealAnimationTools
         [Description("FBX apply-scale option (default FBX_SCALE_NONE).")] string? scaleMode = null,
         bool? triangulate = null,
         [Description("Export even if validate_rig reports errors.")] bool? force = null,
+        [Description("Keep the armature object's name as the skeleton's top bone instead of renaming it 'Armature'. Default: on for rigs imported from an FBX (import_file / import_animation), where that object is a real bone of the Unreal skeleton (Root_M, Cow_MAINSHJnt...); renaming it drops the bone and clips play rotated.")] bool? keepArmatureName = null,
         CancellationToken ct = default)
         => Results.Text(await blender.CallAsync("export_animation_for_unreal", new Args
         {
             ["armature"] = armature, ["asset_name"] = assetName, ["folder"] = folder, ["actions"] = actions,
             ["include_mesh"] = includeMesh, ["deform_only"] = deformOnly, ["unreal_folder"] = unrealFolder,
             ["target_fps"] = targetFps, ["units"] = units, ["scale_mode"] = scaleMode, ["triangulate"] = triangulate, ["force"] = force,
+            ["keep_armature_name"] = keepArmatureName,
         }, TimeSpan.FromMinutes(10), ct));
 
     [McpServerTool(Name = "import_animation", Title = "Import FBX animation")]

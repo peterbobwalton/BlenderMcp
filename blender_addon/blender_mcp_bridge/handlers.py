@@ -11,6 +11,7 @@ import contextlib
 import io
 import math
 import os
+import re
 import tempfile
 import time
 
@@ -1575,8 +1576,14 @@ def import_file(p):
             bpy.ops.wm.ply_import(filepath=path)
         else:
             raise BridgeError(f"Unsupported file type {ext}")
-    new = [o.name for o in bpy.data.objects if o not in before]
-    return {"imported": new}
+    new = [o for o in bpy.data.objects if o not in before]
+    if ext == ".fbx":
+        for o in new:
+            if o.type == "ARMATURE" and o.name.split(".")[0] != "Armature":
+                # Blender turns the FBX's top skeleton node into the armature object. In Unreal exports that node
+                # is a real bone (Root_M, Cow_MAINSHJnt...): export_animation_for_unreal keeps this name for it.
+                o["mcp_fbx_root_node"] = re.sub(r"\.\d{3}$", "", o.name)
+    return {"imported": [o.name for o in new]}
 
 
 # ------------------------------------------------------------- visuals
