@@ -6,8 +6,7 @@
 ; then, for each Blender 4.2+ the user ticks:
 ;   blender.exe -c extension install-file -r user_default -e <zip>
 ;   -> %APPDATA%\Blender Foundation\Blender\<ver>\extensions\user_default\blender_mcp_bridge (enabled)
-; and registers the server for Claude Code (~\.claude.json, one connector per session, desktop Code tab included),
-; or in Claude Desktop's claude_desktop_config.json when Claude Code has never run.
+; and registers the server in Claude Desktop's claude_desktop_config.json (classic + Microsoft Store builds).
 ;
 ; Build with build-installer.ps1 (publishes the server and zips the add-on first).
 
@@ -50,7 +49,7 @@ Source: "..\blender_addon\{#ExtId}\*"; DestDir: "{app}\addon\{#ExtId}"; Excludes
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Tasks]
-Name: "claude"; Description: "Add the MCP server to Claude (Claude Code sessions, or Claude Desktop without Claude Code)"
+Name: "claude"; Description: "Add the MCP server to Claude Desktop (claude_desktop_config.json)"
 
 [UninstallRun]
 Filename: "{app}\server\{#ServerExe}"; Parameters: "--unregister --name {#McpName}"; \
@@ -287,12 +286,12 @@ begin
   ClaudeResult := '';
   if not WizardIsTaskSelected('claude') then
     Exit;
-  WizardForm.StatusLabel.Caption := 'Registering with Claude...';
+  WizardForm.StatusLabel.Caption := 'Registering with Claude Desktop...';
   if Exec(ExpandConstant('{app}\server\{#ServerExe}'), '--register --name {#McpName}' + GetPortArgs(''),
           '', SW_HIDE, ewWaitUntilTerminated, Code) and (Code = 0) then
-    ClaudeResult := 'Restart Claude (desktop app and open Claude Code sessions) to load the "{#McpName}" MCP server.'
+    ClaudeResult := 'Restart Claude Desktop to load the "{#McpName}" MCP server.'
   else
-    ClaudeResult := 'Claude: registration FAILED (code ' + IntToStr(Code) + '). Check that ~\.claude.json / claude_desktop_config.json ' +
+    ClaudeResult := 'Claude Desktop: registration FAILED (code ' + IntToStr(Code) + '). Check that claude_desktop_config.json ' +
       'is valid JSON and not locked, then run "' + ExpandConstant('{app}\server\{#ServerExe}') + '" --register --name {#McpName}';
 end;
 
